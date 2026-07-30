@@ -20,8 +20,9 @@ internal enum UsageMenuState: Equatable {
 /// (per-model limits, etc.), all pre-derived here so no threshold/severity logic has to live
 /// in the views.
 internal struct UsageDetailData: Equatable, Sendable {
-    /// The higher-usage window between `fiveHour`/`sevenDay`/active limits — what the menu bar
-    /// label shows, since it's the one closest to running out.
+    /// What the menu bar label shows: the 5-hour session window whenever the snapshot carries it,
+    /// falling back to `sevenDay` and then to the highest active limit. See
+    /// ``UsageMenuViewModel/deriveDisplayState(from:)`` for the full rule.
     internal let dominant: UsageDisplayState
     internal let fiveHour: UsageDisplayState?
     internal let sevenDay: UsageDisplayState?
@@ -238,49 +239,128 @@ internal final class UsageMenuViewModel {
 
         let fiveHour: UsageDisplayState? = windowDisplayState(kind: "five_hour", window: snapshot.fiveHour)
         let sevenDay: UsageDisplayState? = windowDisplayState(kind: "seven_day", window: snapshot.sevenDay)
-        let activeLimits: [UsageDisplayState] = (snapshot.limits ?? [])
-            .filter { $0.isActive == true }
-            .compactMap(limitDisplayState)
+        let namedWindows: [UsageDisplayState] = [fiveHour, sevenDay].compactMap { $0 }
+        let activeLimits: [UsageDisplayState] = activeLimitDisplayStates(from: snapshot)
+            .filter { !isDuplicate($0, of: namedWindows) }
 
         return UsageDetailData(dominant: dominant, fiveHour: fiveHour, sevenDay: sevenDay, limits: activeLimits)
     }
 
-    /// Picks the higher-usage window between `five_hour`, `seven_day`, and any active entry in
-    /// `limits[]` — the "dominant" window is whichever is closest to running out, since that's
-    /// the one worth surfacing at a glance. Severity is derived from that percentage directly
-    /// (<70 normal, 70–89 warning, ≥90 critical), not trusted from the server's own `severity`
-    /// string, so the menu bar's thresholds stay consistent regardless of what the endpoint
-    /// reports.
+    private static func activeLimitDisplayStates(from snapshot: UsageSnapshot) -> [UsageDisplayState] {
+        (snapshot.limits ?? [])
+            .filter { $0.isActive == true }
+            .compactMap(limitDisplayState)
+    }
+
+    /// The server reports the weekly window twice: once as `seven_day`, and again as a
+    /// `weekly_all` entry in `limits[]` with the same percentage and the same reset — which
+    /// painted two identical rows in the popover.
+    ///
+    /// A limit counts as a duplicate only when it's a restatement of the *same scope* as an
+    /// already-shown named window (`session`/`weekly`, per ``scopeAlias(for:)``) **and** resets at
+    /// the same instant. Both halves are required: a per-model limit can legitimately share the
+    /// session's reset time (an Opus cap inside the same 5-hour window) and must still get its own
+    /// row, and an unrecognized key is never treated as a duplicate — when in doubt, show it.
+    private static func isDuplicate(_ limit: UsageDisplayState, of namedWindows: [UsageDisplayState]) -> Bool {
+        guard let alias = scopeAlias(for: limit.windowKind) else { return false }
+        return namedWindows.contains { window in
+            window.windowKind == alias
+                && abs(window.resetsAt.timeIntervalSince(limit.resetsAt)) < duplicateResetTolerance
+        }
+    }
+
+    /// The two sources for the same window are generated server-side from the same clock, so their
+    /// resets match to the microsecond in practice. The tolerance only absorbs a future rounding
+    /// difference between the fields — it is deliberately far below the shortest window (5 hours),
+    /// so two genuinely different windows can never fall inside it.
+    private static let duplicateResetTolerance: TimeInterval = 60
+
+    /// Maps a `limits[]` key onto the named window it restates, or nil when the key describes
+    /// something narrower (a per-model cap) or simply isn't recognized.
+    ///
+    /// Only keys actually observed from the endpoint are listed. Guessing extra aliases would cut
+    /// the wrong way: an alias that turns out to name something narrower than the named window
+    /// makes a legitimate row disappear silently, whereas an unrecognized key merely shows an
+    /// extra row. Under-matching is the safe failure here, so new aliases get added when they're
+    /// seen, not in anticipation.
+    private static func scopeAlias(for kind: String) -> String? {
+        switch kind.lowercased() {
+        case "session", "five_hour":
+            return "five_hour"
+        case "weekly", "weekly_all", "seven_day":
+            return "seven_day"
+        default:
+            return nil
+        }
+    }
+
+    /// Turns an endpoint key into a row title. Known keys get real Spanish labels; anything else
+    /// is humanized rather than dropped or shown raw — the endpoint is undocumented and its keys
+    /// rotate (`tangelo`, `seven_day_omelette`), so an unrecognized key has to degrade into
+    /// something readable instead of leaking `weekly_all` onto the screen or rendering blank.
+    private static func title(forKind kind: String) -> String {
+        switch kind.lowercased() {
+        case "session", "five_hour":
+            return "Últimas 5 horas"
+        case "weekly", "weekly_all", "seven_day":
+            return "Semanal"
+        case "opus":
+            return "Opus"
+        case "weekly_opus":
+            return "Semanal · Opus"
+        default:
+            return humanized(kind)
+        }
+    }
+
+    /// `weekly_sonnet` → "Weekly sonnet". Deliberately mechanical: it can't invent a good name for
+    /// a key nobody has seen, only guarantee the row is legible and never empty.
+    private static func humanized(_ kind: String) -> String {
+        let words: String = kind
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = words.first else { return "Otro límite" }
+        return first.uppercased() + words.dropFirst()
+    }
+
+    /// Picks the window the menu bar label shows. The rule is a fixed preference order, not a
+    /// max: the 5-hour session is *always* the dominant window when it's present, because that's
+    /// the number that matters at a glance and the one Claude Desktop leads with. Picking the
+    /// highest instead would show 31% (weekly) while the session sits at 2% — technically the
+    /// window closest to running out, but not the one the user is asking about.
+    ///
+    /// Fallback chain, in order, so the label is never empty while the snapshot carries anything
+    /// usable at all:
+    /// 1. `five_hour`
+    /// 2. `seven_day` — when the response omits the session window
+    /// 3. the highest active entry in `limits[]` — last resort, unchanged from before
+    ///
+    /// With none of the three usable, this returns nil and the caller surfaces
+    /// `.error(.noUsableData)`.
+    ///
+    /// Severity is derived from the chosen percentage directly (<70 normal, 70–89 warning,
+    /// ≥90 critical), not trusted from the server's own `severity` string, so the menu bar's
+    /// thresholds stay consistent regardless of what the endpoint reports.
     private static func deriveDisplayState(from snapshot: UsageSnapshot) -> UsageDisplayState? {
-        var candidates: [(kind: String, percent: Double, resetsAt: Date)] = []
-
-        if let fiveHour = snapshot.fiveHour, let percent = fiveHour.utilization, let resetsAt = fiveHour.resetsAt {
-            candidates.append((kind: "five_hour", percent: percent, resetsAt: resetsAt))
+        if let fiveHour = windowDisplayState(kind: "five_hour", window: snapshot.fiveHour) {
+            return fiveHour
         }
-        if let sevenDay = snapshot.sevenDay, let percent = sevenDay.utilization, let resetsAt = sevenDay.resetsAt {
-            candidates.append((kind: "seven_day", percent: percent, resetsAt: resetsAt))
-        }
-        for limit in snapshot.limits ?? [] where limit.isActive == true {
-            guard let percent = limit.percent, let resetsAt = limit.resetsAt else { continue }
-            candidates.append((kind: limit.kind ?? "unknown", percent: percent, resetsAt: resetsAt))
+        if let sevenDay = windowDisplayState(kind: "seven_day", window: snapshot.sevenDay) {
+            return sevenDay
         }
 
-        guard let dominant = candidates.max(by: { $0.percent < $1.percent }) else { return nil }
-
-        return UsageDisplayState(
-            percentUsed: Int(dominant.percent.rounded()),
-            severity: severity(forPercent: dominant.percent),
-            windowKind: dominant.kind,
-            resetsAt: dominant.resetsAt
-        )
+        return activeLimitDisplayStates(from: snapshot).max { $0.percentUsed < $1.percentUsed }
     }
 
     private static func limitDisplayState(_ limit: UsageSnapshot.Limit) -> UsageDisplayState? {
         guard let percent = limit.percent, let resetsAt = limit.resetsAt else { return nil }
+        let kind: String = limit.kind ?? "limit"
         return UsageDisplayState(
             percentUsed: Int(percent.rounded()),
             severity: severity(forPercent: percent),
-            windowKind: limit.kind ?? "limit",
+            windowKind: kind,
+            title: title(forKind: kind),
             resetsAt: resetsAt
         )
     }
@@ -291,6 +371,7 @@ internal final class UsageMenuViewModel {
             percentUsed: Int(percent.rounded()),
             severity: severity(forPercent: percent),
             windowKind: kind,
+            title: title(forKind: kind),
             resetsAt: resetsAt
         )
     }

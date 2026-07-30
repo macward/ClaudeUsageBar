@@ -118,12 +118,66 @@ struct UsageMenuViewModelTests {
         #expect(detail.dominant.severity == expectedSeverity)
     }
 
-    @Test("Among five_hour, seven_day, and active limits, the highest-usage window wins as dominant")
-    func dominantWindowIsTheHighestUsageOne() async throws {
+    @Test("five_hour is the dominant window even when seven_day sits far higher")
+    func dominantWindowIsAlwaysTheFiveHourSession() async throws {
         let defaults: UserDefaults = Self.freshDefaults()
         let snapshot: UsageSnapshot = UsageSnapshot(
-            fiveHour: UsageSnapshot.Window(utilization: 20, resetsAt: Date().addingTimeInterval(3600)),
-            sevenDay: UsageSnapshot.Window(utilization: 85, resetsAt: Date().addingTimeInterval(86400)),
+            fiveHour: UsageSnapshot.Window(utilization: 2, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: UsageSnapshot.Window(utilization: 31, resetsAt: Date().addingTimeInterval(86400)),
+            limits: nil
+        )
+        let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [.success(snapshot)])
+        let repository: UsageRepository = Self.makeRepository(apiService: apiService, defaults: defaults)
+        defaults.set(true, forKey: "com.maxward.ClaudeUsageBar.hasCompletedOnboarding")
+        let viewModel: UsageMenuViewModel = UsageMenuViewModel(
+            repository: repository,
+            isPollingEnabled: false,
+            userDefaults: defaults
+        )
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.dominant.windowKind == "five_hour")
+        #expect(detail.dominant.percentUsed == 2)
+        #expect(detail.fiveHour?.percentUsed == 2)
+        #expect(detail.sevenDay?.percentUsed == 31)
+    }
+
+    @Test("Label severity follows the session window, not a hotter weekly window")
+    func dominantSeverityFollowsTheSessionWindow() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 12, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: UsageSnapshot.Window(utilization: 95, resetsAt: Date().addingTimeInterval(86400)),
+            limits: nil
+        )
+        let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [.success(snapshot)])
+        let repository: UsageRepository = Self.makeRepository(apiService: apiService, defaults: defaults)
+        defaults.set(true, forKey: "com.maxward.ClaudeUsageBar.hasCompletedOnboarding")
+        let viewModel: UsageMenuViewModel = UsageMenuViewModel(
+            repository: repository,
+            isPollingEnabled: false,
+            userDefaults: defaults
+        )
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.dominant.severity == .normal)
+        #expect(detail.sevenDay?.severity == .critical)
+    }
+
+    @Test("Without five_hour, the label falls back to seven_day instead of going empty")
+    func dominantFallsBackToSevenDayWithoutSession() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: nil,
+            sevenDay: UsageSnapshot.Window(utilization: 31, resetsAt: Date().addingTimeInterval(86400)),
             limits: nil
         )
         let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [.success(snapshot)])
@@ -141,9 +195,252 @@ struct UsageMenuViewModelTests {
             Issue.record("expected .fresh, got \(viewModel.state)"); return
         }
         #expect(detail.dominant.windowKind == "seven_day")
-        #expect(detail.dominant.percentUsed == 85)
-        #expect(detail.fiveHour?.percentUsed == 20)
-        #expect(detail.sevenDay?.percentUsed == 85)
+        #expect(detail.dominant.percentUsed == 31)
+        #expect(detail.fiveHour == nil)
+    }
+
+    @Test("Without either named window, the label falls back to the highest active limit")
+    func dominantFallsBackToHighestActiveLimit() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: nil,
+            sevenDay: nil,
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "opus",
+                    group: nil,
+                    percent: 40,
+                    severity: "normal",
+                    resetsAt: Date().addingTimeInterval(3600),
+                    isActive: true
+                ),
+                UsageSnapshot.Limit(
+                    kind: "fable",
+                    group: nil,
+                    percent: 77,
+                    severity: "warning",
+                    resetsAt: Date().addingTimeInterval(3600),
+                    isActive: true
+                )
+            ]
+        )
+        let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [.success(snapshot)])
+        let repository: UsageRepository = Self.makeRepository(apiService: apiService, defaults: defaults)
+        defaults.set(true, forKey: "com.maxward.ClaudeUsageBar.hasCompletedOnboarding")
+        let viewModel: UsageMenuViewModel = UsageMenuViewModel(
+            repository: repository,
+            isPollingEnabled: false,
+            userDefaults: defaults
+        )
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.dominant.windowKind == "fable")
+        #expect(detail.dominant.percentUsed == 77)
+    }
+
+    @Test("The weekly_all limit that restates seven_day is dropped instead of painting a second row")
+    func weeklyAllLimitIsDeduplicatedAgainstSevenDay() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let weeklyReset: Date = Date().addingTimeInterval(86_400)
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 2, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: UsageSnapshot.Window(utilization: 31, resetsAt: weeklyReset),
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "weekly_all",
+                    group: nil,
+                    percent: 31,
+                    severity: "normal",
+                    resetsAt: weeklyReset,
+                    isActive: true
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.isEmpty)
+        #expect(detail.sevenDay?.percentUsed == 31)
+    }
+
+    /// The dedup rule needs both halves — same scope AND same reset. A per-model cap that happens
+    /// to share the session's reset instant is not a restatement of it, and must keep its row.
+    @Test("A per-model limit sharing the session's reset time is still shown")
+    func perModelLimitSharingResetIsNotDeduplicated() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let sessionReset: Date = Date().addingTimeInterval(3600)
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 2, resetsAt: sessionReset),
+            sevenDay: nil,
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "opus",
+                    group: nil,
+                    percent: 44,
+                    severity: "normal",
+                    resetsAt: sessionReset,
+                    isActive: true
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.count == 1)
+        #expect(detail.limits.first?.title == "Opus")
+    }
+
+    /// Same scope but a different reset means the server is reporting two genuinely different
+    /// windows — keep both.
+    @Test("A weekly-scoped limit resetting at a different time is not treated as a duplicate")
+    func weeklyScopedLimitWithDifferentResetIsKept() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: nil,
+            sevenDay: UsageSnapshot.Window(utilization: 31, resetsAt: Date().addingTimeInterval(86_400)),
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "weekly_all",
+                    group: nil,
+                    percent: 12,
+                    severity: "normal",
+                    resetsAt: Date().addingTimeInterval(3 * 86_400),
+                    isActive: true
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.count == 1)
+    }
+
+    @Test("The named windows carry user-facing titles, never their raw endpoint keys")
+    func namedWindowsCarryUserFacingTitles() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 2, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: UsageSnapshot.Window(utilization: 31, resetsAt: Date().addingTimeInterval(86_400)),
+            limits: nil
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.fiveHour?.title == "Últimas 5 horas")
+        #expect(detail.sevenDay?.title == "Semanal")
+        #expect(detail.fiveHour?.windowKind == "five_hour")
+    }
+
+    /// The endpoint is undocumented and its keys rotate, so an unseen key must degrade into
+    /// something legible rather than reaching the screen raw or blank.
+    @Test("An unknown limit key is humanized, never shown raw or empty", arguments: [
+        ("seven_day_omelette", "Seven day omelette"),
+        ("tangelo", "Tangelo"),
+        ("iguana-necktie", "Iguana necktie")
+    ])
+    func unknownLimitKeyIsHumanized(kind: String, expectedTitle: String) async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 2, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: nil,
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: kind,
+                    group: nil,
+                    percent: 10,
+                    severity: "normal",
+                    resetsAt: Date().addingTimeInterval(7200),
+                    isActive: true
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.count == 1)
+        #expect(detail.limits.first?.title == expectedTitle)
+        #expect(detail.limits.first?.title.isEmpty == false)
+    }
+
+    /// Key matching is case-insensitive on purpose — the endpoint is undocumented, and a casing
+    /// change on its side must not resurrect the duplicate row.
+    @Test("Key matching ignores casing, so a re-cased weekly key is still deduplicated")
+    func keyMatchingIsCaseInsensitive() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let weeklyReset: Date = Date().addingTimeInterval(86_400)
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: nil,
+            sevenDay: UsageSnapshot.Window(utilization: 31, resetsAt: weeklyReset),
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "Weekly_All",
+                    group: nil,
+                    percent: 31,
+                    severity: "normal",
+                    resetsAt: weeklyReset,
+                    isActive: true
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.isEmpty)
+    }
+
+    @Test("A limit with no kind at all still gets a non-empty title")
+    func limitWithoutKindStillHasATitle() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 2, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: nil,
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: nil,
+                    group: nil,
+                    percent: 10,
+                    severity: nil,
+                    resetsAt: Date().addingTimeInterval(7200),
+                    isActive: true
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.first?.title.isEmpty == false)
     }
 
     @Test("A network error maps to a distinct .error(.repository(.offline)) state, not a generic error")
@@ -441,6 +738,16 @@ struct UsageMenuViewModelTests {
         let defaults: UserDefaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
+    }
+
+    /// A ViewModel already past onboarding, wired to serve `snapshot` on its first (and only)
+    /// fetch — the shape every detail-derivation test needs, with polling off so nothing runs
+    /// outside the test's own `refresh()`.
+    private static func makeViewModel(snapshot: UsageSnapshot, defaults: UserDefaults) -> UsageMenuViewModel {
+        let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [.success(snapshot)])
+        let repository: UsageRepository = Self.makeRepository(apiService: apiService, defaults: defaults)
+        defaults.set(true, forKey: "com.maxward.ClaudeUsageBar.hasCompletedOnboarding")
+        return UsageMenuViewModel(repository: repository, isPollingEnabled: false, userDefaults: defaults)
     }
 
     private static func makeRepository(apiService: SequencedUsageAPIService, defaults: UserDefaults) -> UsageRepository {

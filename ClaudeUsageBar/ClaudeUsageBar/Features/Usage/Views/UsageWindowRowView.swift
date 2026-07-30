@@ -2,16 +2,17 @@ import SwiftUI
 
 /// Pure composite: one usage window's title, percent, and a relative + absolute reset time.
 /// No dependencies, no ViewModel — configured entirely through its parameters, reusable for
-/// the 5h window, the weekly window, and any per-limit entry.
+/// the 5h window, the weekly window, and any per-limit entry. The title travels inside
+/// ``UsageDisplayState`` because deciding it (mapping an endpoint key to a label) is logic that
+/// belongs to the ViewModel, not here.
 internal struct UsageWindowRowView: View {
 
-    internal let title: String
     internal let display: UsageDisplayState
 
     internal var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title)
+                Text(display.title)
                     .font(.headline)
                 Spacer()
                 Text("\(display.percentUsed)%")
@@ -20,10 +21,12 @@ internal struct UsageWindowRowView: View {
             }
 
             // The countdown ticks once a minute via TimelineView, never on every second —
-            // this view holds no Timer of its own.
-            TimelineView(.periodic(from: .now, by: 60)) { _ in
+            // this view holds no Timer of its own. The tick's own date drives the formatter, so
+            // the text is a pure function of the timeline context rather than of a `Date()` read
+            // hidden inside the body.
+            TimelineView(.periodic(from: .now, by: 60)) { context in
                 HStack {
-                    Text(Self.relativeReset(display.resetsAt))
+                    Text("Reinicia en \(RemainingTimeFormatter.duration(until: display.resetsAt, now: context.date))")
                     Spacer()
                     Text(display.resetsAt, format: .dateTime.hour().minute())
                 }
@@ -31,12 +34,6 @@ internal struct UsageWindowRowView: View {
                 .foregroundStyle(.secondary)
             }
         }
-    }
-
-    private static func relativeReset(_ date: Date) -> String {
-        let formatter: RelativeDateTimeFormatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
     }
 
     private static func color(for severity: UsageDisplayState.Severity) -> Color {

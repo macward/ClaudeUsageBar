@@ -61,16 +61,18 @@ internal struct UsageDetailView: View {
     @ViewBuilder
     private func windows(_ detail: UsageDetailData) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Every row title — including the two named windows — is resolved by the ViewModel,
+            // so no endpoint key ever reaches the screen unmapped.
             if let fiveHour: UsageDisplayState = detail.fiveHour {
-                UsageWindowRowView(title: "Últimas 5 horas", display: fiveHour)
+                UsageWindowRowView(display: fiveHour)
             }
             if let sevenDay: UsageDisplayState = detail.sevenDay {
-                UsageWindowRowView(title: "Semanal", display: sevenDay)
+                UsageWindowRowView(display: sevenDay)
             }
             if !detail.limits.isEmpty {
                 Divider()
                 ForEach(Array(detail.limits.enumerated()), id: \.offset) { _, limit in
-                    UsageWindowRowView(title: limit.windowKind, display: limit)
+                    UsageWindowRowView(display: limit)
                 }
             }
         }
@@ -121,9 +123,7 @@ internal struct UsageDetailView: View {
     }
 
     private static func throttledText(until: Date) -> String {
-        let formatter: RelativeDateTimeFormatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return "Podés reintentar \(formatter.localizedString(for: until, relativeTo: Date()))"
+        "Podés reintentar en \(RemainingTimeFormatter.duration(until: until))"
     }
 
     private static func errorText(_ error: UsageMenuError) -> String {

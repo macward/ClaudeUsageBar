@@ -14,13 +14,20 @@ internal nonisolated struct UsageDisplayState: Equatable, Sendable {
 
     internal let percentUsed: Int
     internal let severity: Severity
+    /// The raw key this row came from (`five_hour`, `weekly_all`, a per-model limit's `kind`…).
+    /// Kept for identity and diagnostics — never rendered. The endpoint is undocumented and its
+    /// keys come and go, so what reaches the screen is ``title``.
     internal let windowKind: String
+    /// The user-facing row title, already resolved by the ViewModel. Never empty, even when
+    /// `windowKind` is a key this build has never seen.
+    internal let title: String
     internal let resetsAt: Date
 
-    internal init(percentUsed: Int, severity: Severity, windowKind: String, resetsAt: Date) {
+    internal init(percentUsed: Int, severity: Severity, windowKind: String, title: String, resetsAt: Date) {
         self.percentUsed = percentUsed
         self.severity = severity
         self.windowKind = windowKind
+        self.title = title
         self.resetsAt = resetsAt
     }
 }
