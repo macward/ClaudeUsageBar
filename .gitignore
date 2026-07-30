@@ -1,1 +1,43 @@
+## macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+## Xcode — user-specific state (nunca se commitea)
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+
+## Xcode — build output
+build/
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+## Xcode — workspace cruft
+*.xcworkspace/xcuserdata/
+!*.xcodeproj/project.xcworkspace/contents.xcworkspacedata
+
+## Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+## Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+## Instruments / profiling
+*.trace
+
+## Fastlane (si se añade)
+fastlane/report.xml
+fastlane/screenshots/**/*.png
+fastlane/test_output
