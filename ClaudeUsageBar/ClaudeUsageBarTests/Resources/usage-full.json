@@ -1,0 +1,28 @@
+{
+  "five_hour": {
+    "utilization": 55.0,
+    "resets_at": "2026-07-30T06:29:59.393695+00:00"
+  },
+  "seven_day": {
+    "utilization": 18.0,
+    "resets_at": "2026-08-03T00:00:00.000000+00:00"
+  },
+  "limits": [
+    {
+      "kind": "session",
+      "group": "five_hour",
+      "percent": 55.0,
+      "severity": "normal",
+      "resets_at": "2026-07-30T06:29:59.393695+00:00",
+      "is_active": true
+    },
+    {
+      "kind": "weekly",
+      "group": "seven_day",
+      "percent": 18.0,
+      "severity": "normal",
+      "resets_at": "2026-08-03T00:00:00.000000+00:00",
+      "is_active": false
+    }
+  ]
+}

@@ -41,3 +41,6 @@ playground.xcworkspace
 fastlane/report.xml
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+## Claude Code — estado local
+.claude/settings.local.json

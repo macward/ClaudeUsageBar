@@ -1,0 +1,21 @@
+{
+  "five_hour": {
+    "utilization": 30.0,
+    "resets_at": "2026-07-30T12:00:00.000000+00:00"
+  },
+  "tangelo": true,
+  "seven_day_omelette": {
+    "whatever": 1
+  },
+  "iguana_necktie": [1, 2, 3],
+  "limits": [
+    {
+      "kind": "session",
+      "percent": 30.0,
+      "severity": "normal",
+      "resets_at": "2026-07-30T12:00:00.000000+00:00",
+      "is_active": true,
+      "mystery_field": "xyz"
+    }
+  ]
+}

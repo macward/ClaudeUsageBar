@@ -53,11 +53,19 @@ Implicaciones de diseño:
 
 ## Estado actual del código
 
-El repo tiene **solo el spike de viabilidad**, no la app. El template de Xcode ya fue removido (`Item.swift`, `ContentView.swift`, SwiftData y su `fatalError`), la scene es `MenuBarExtra`, y `ClaudeUsageBar/Spike/` contiene tres probes que corren al arranque vía `SpikeAppDelegate`.
+La app está implementada y el spike fue eliminado. La feature completa vive en `Features/Usage/`:
 
-`Spike/` es código desechable: se borra cuando empiece la implementación real. Lo que hay que conservar de ahí es el `KeychainCredentialsProbe` (lógica de lectura), el decoder de `UsageSnapshot` y el parseo de timestamps — todo eso se promueve a `Features/Usage/` y `Shared/Services/`.
+- `Models/` — `UsageSnapshot` (decoder tolerante del endpoint) y `UsageDisplayState`.
+- `Services/` — `ClaudeCodeCredentialsService` (Keychain, solo lectura) y `UsageAPIService` (el GET).
+- `Repositories/` — `UsageRepository`: dueño único de la política de fetch (TTL 180s, backoff 429, caché del último snapshot en `UserDefaults`).
+- `ViewModels/` — `UsageMenuViewModel`: ciclo de polling, gate de onboarding y gate anti-re-prompt.
+- `Views/` — `UsageMenuLabelView` (control puro del label), `UsageWindowRowView` (composite), `UsageDetailView` (popover) y `OnboardingView` + `AuthorizationDeniedView`.
 
-Pendiente: los tests (`ClaudeUsageBarTests`, `ClaudeUsageBarUITests`) siguen siendo stubs del template.
+`App/ClaudeUsageBarApp.swift` es el composition root: el `AppDelegate` construye el grafo en su `init` e inyecta el ViewModel por `.environment`.
+
+Tests: los del template siguen siendo stubs, pero `ClaudeUsageBarTests/Features/Usage/` cubre modelos, servicios, repository y ViewModel con fixtures en `Resources/` y mocks manuales en `Helpers/Mocks/`.
+
+Pendiente conocido: la denegación de Keychain no se persiste entre lanzamientos (relanzar vuelve a preguntar una vez), y la ruta del observador de `NSWorkspace.didWakeNotification` no tiene seam de test.
 
 ## Tech Stack
 
