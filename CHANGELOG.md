@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Monitor de consumo en la menu bar: muestra el porcentaje de la ventana más cargada (5h o semanal)
+- Monitor de consumo en la menu bar: muestra el porcentaje de la ventana de 5 horas (la sesión)
   sin abrir el popover, y el detalle de ambas ventanas, sus límites por modelo activos, el tiempo
-  hasta el reset y la antigüedad del dato al abrirlo.
+  hasta el reset —en horas y minutos, o días y horas según la escala— y la antigüedad del dato al
+  abrirlo. Los límites que solo repiten una ventana ya mostrada se descartan, y las claves del
+  endpoint nunca llegan crudas a la pantalla.
 - Lectura del consumo desde `GET /api/oauth/usage` reutilizando el token OAuth que el CLI `claude`
   ya guardó en el Keychain. La app nunca escribe en el Keychain ni refresca el token.
 - Política de red conservadora: intervalo mínimo de 180s, backoff 3→6→12→15min ante 429, y último
