@@ -101,7 +101,25 @@ grep -q "flags=.*runtime" <<<"$SIGN_INFO" \
 grep -q "Developer ID Application" <<<"$SIGN_INFO" \
   || { echo "ERROR: no está firmada con Developer ID"; exit 1; }
 
+# --- Notarización de la app ----------------------------------------------
+# La .app se notariza y se sella ANTES de entrar al DMG. Sellar únicamente el DMG deja la
+# app sin ticket propio: Gatekeeper igual la acepta mientras haya red, pero una copia de la
+# .app arrastrada fuera del DMG y llevada a una máquina sin conexión no tiene contra qué
+# validar. Son dos vueltas a Apple en vez de una, y cubren ese caso.
+#
+# El zip se arma con `ditto -c -k --keepParent`, que es lo que pide Apple: preserva symlinks
+# y metadata del bundle, cosa que `zip` a secas no garantiza y rompería la firma.
+info "Notarizando la app (1 de 2)"
+APP_ZIP="$BUILD_DIR/ClaudeUsageBar.zip"
+ditto -c -k --keepParent "$APP_PATH" "$APP_ZIP"
+xcrun notarytool submit "$APP_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+
+info "Stapleando la app"
+xcrun stapler staple "$APP_PATH"
+xcrun stapler validate "$APP_PATH"
+
 # --- DMG -----------------------------------------------------------------
+# El DMG se arma a partir de la app ya sellada, así que el ticket viaja adentro.
 info "Armando el DMG"
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
@@ -117,18 +135,28 @@ hdiutil create \
 
 codesign --force --sign "$SIGN_IDENTITY" "$DMG_PATH"
 
-# --- Notarización --------------------------------------------------------
-# Se notariza el DMG, no el .app: el sello queda pegado al archivo que el usuario
-# descarga, que es donde Gatekeeper lo busca.
-info "Enviando a notarizar (esto tarda unos minutos)"
+# --- Notarización del DMG ------------------------------------------------
+# El contenedor se notariza aparte de la app: el sello tiene que estar pegado al archivo
+# que la persona descarga, que es donde Gatekeeper lo busca al abrirlo.
+info "Notarizando el DMG (2 de 2)"
 xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
 
-info "Stapleando el sello"
+info "Stapleando el DMG"
 xcrun stapler staple "$DMG_PATH"
 xcrun stapler validate "$DMG_PATH"
 
-# Comprobación final con la misma evaluación que hace Gatekeeper al abrirlo.
+# --- Verificación final --------------------------------------------------
+# Se evalúa el DMG y, montándolo, también la app de adentro: es la única forma de
+# comprobar que el ticket viajó dentro del contenedor y no solo pegado a la tapa.
 info "Verificación Gatekeeper"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+
+MOUNT_POINT="$(hdiutil attach "$DMG_PATH" -nobrowse -readonly | grep -o '/Volumes/.*' | head -1)"
+if [[ -n "$MOUNT_POINT" ]]; then
+  spctl --assess --type execute --verbose=2 "$MOUNT_POINT/ClaudeUsageBar.app"
+  xcrun stapler validate "$MOUNT_POINT/ClaudeUsageBar.app" \
+    || { hdiutil detach "$MOUNT_POINT" -quiet; echo "ERROR: la app dentro del DMG quedó sin ticket"; exit 1; }
+  hdiutil detach "$MOUNT_POINT" -quiet
+fi
 
 info "Listo: $DMG_PATH"
