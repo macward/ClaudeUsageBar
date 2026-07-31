@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-07-31
+
+### Fixed
+
+- La app desaparecía sola de la menu bar, sin crash report. No crasheaba: al no tener ventanas,
+  AppKit la marcaba como terminable automáticamente y RunningBoard le daba
+  `maxTerminationResistance: NonInteractive`, así que `cachedelete` la mataba para vaciar las
+  caches de su contenedor (`OS_REASON_RUNNINGBOARD | 0xBADDD15C`,
+  `CacheDeleteAppContainerCaches`). Ahora el delegate llama a `disableAutomaticTermination` y
+  `disableSuddenTermination` al arrancar. No la vuelve inmune —con el disco lleno el sistema
+  igual gana— pero deja de ser el proceso más barato de matar de la máquina.
+
 ## [1.1.2] - 2026-07-31
 
 ### Fixed
