@@ -75,6 +75,14 @@ internal final class UsageMenuViewModel {
     /// the snapshot currently on screen is older than this.
     private static let popoverRefreshTTL: TimeInterval = 600
 
+    /// Floor on the polling loop's sleep, not a policy — the repository owns the real interval and
+    /// every one of its paths now pushes `nextAllowedFetch` into the future, so this should never
+    /// bind. It exists so that a path which forgets to degrades into a slow retry instead of a
+    /// spin: this floor used to be 1 second, and a single missing `recordAttempt` on the
+    /// expired-token path was enough to turn the loop into a once-per-second Keychain read that
+    /// ran for as long as the token stayed expired.
+    private static let minimumPollInterval: TimeInterval = 60
+
     internal private(set) var state: UsageMenuState
 
     /// True while the polling loop is deliberately stopped because the Keychain refused access.
@@ -153,7 +161,10 @@ internal final class UsageMenuViewModel {
         guard isAwaitingAuthorizationRetry else { return }
         isAwaitingAuthorizationRetry = false
         state = .loading
-        await refresh()
+        // Ignores the fetch interval: the denial that got us here recorded an attempt, so an
+        // ordinary refresh would come straight back as `.throttled` without ever re-reading the
+        // Keychain, leaving the button looking broken.
+        await performRefresh(ignoringThrottle: true)
         guard !isAwaitingAuthorizationRetry else { return }
         start()
     }
@@ -166,8 +177,14 @@ internal final class UsageMenuViewModel {
     /// denial". `retryAuthorization()` clears the flag before calling in — it is the one
     /// deliberate exception.
     internal func refresh() async {
+        await performRefresh(ignoringThrottle: false)
+    }
+
+    private func performRefresh(ignoringThrottle: Bool) async {
         guard hasCompletedOnboarding, !isAwaitingAuthorizationRetry else { return }
-        let result: UsageRepositoryResult = await repository.refresh()
+        let result: UsageRepositoryResult = ignoringThrottle
+            ? await repository.retryIgnoringThrottle()
+            : await repository.refresh()
         apply(result)
     }
 
@@ -222,7 +239,7 @@ internal final class UsageMenuViewModel {
                 guard !Task.isCancelled else { return }
 
                 let deadline: Date = self.repository.nextAllowedFetch
-                let interval: TimeInterval = max(deadline.timeIntervalSinceNow, 1)
+                let interval: TimeInterval = max(deadline.timeIntervalSinceNow, Self.minimumPollInterval)
                 try? await Task.sleep(for: .seconds(interval))
             }
         }

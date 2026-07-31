@@ -99,12 +99,20 @@ internal final class UsageRepository {
         // Keychain access, re-authenticate) that a stale-but-plausible-looking number would
         // mask. Network failures, by contrast, say nothing about whether the session itself is
         // still good, so showing the last known snapshot there is the more useful default.
+        //
+        // Every return past the throttle guard records the attempt, including the ones that never
+        // reach the network. Skipping it here left `nextAllowedFetch` in the past, and the polling
+        // loop derives its sleep from that deadline — so an expired token or a missing Claude Code
+        // session collapsed the interval to the loop's 1-second floor and re-read the Keychain
+        // once per second, indefinitely.
         let credentials: ClaudeCodeCredentials
         do {
             credentials = try await credentialsService.readCredentials()
         } catch let credentialsError as ClaudeCodeCredentialsError {
+            recordAttempt(now: now)
             return .failure(.credentialsUnavailable(credentialsError))
         } catch {
+            recordAttempt(now: now)
             return .failure(.credentialsUnavailable(.malformedPayload))
         }
 
@@ -113,10 +121,26 @@ internal final class UsageRepository {
         // policy decision in this type shares one clock, and this one must too for tests to
         // drive it deterministically.
         guard credentials.expiresAt > now else {
+            recordAttempt(now: now)
             return .sessionExpired
         }
 
         return await performFetch(accessToken: credentials.accessToken, allowRetry: true, now: now)
+    }
+
+    /// The user's explicit retry after the Keychain denied access — the one call allowed to ignore
+    /// the fetch interval.
+    ///
+    /// Exempting it is safe precisely because it cannot be reached autonomously: on an
+    /// authorization failure the ViewModel stops the polling loop and drops the wake observer, so
+    /// nothing gets here without a human pressing "Reintentar". Without the exemption the denial's
+    /// own recorded attempt would throttle that retry for 180s and disable the only action left on
+    /// screen — which is also why this exists at all rather than the denial path simply skipping
+    /// `recordAttempt`: the 401-then-denied-re-read path records one too, and would block the
+    /// retry just the same.
+    internal func retryIgnoringThrottle(now: Date = Date()) async -> UsageRepositoryResult {
+        nextAllowedFetch = .distantPast
+        return await refresh(now: now)
     }
 
     // MARK: - Private Methods

@@ -168,6 +168,69 @@ struct UsageRepositoryTests {
         #expect(apiService.callCount == 0)
     }
 
+    @Test("A pre-flight-expired token still arms the fetch interval")
+    func preFlightExpiredAdvancesNextAllowedFetch() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let expiredCredentials: ClaudeCodeCredentials = ClaudeCodeCredentials(
+            accessToken: "sk-ant-oat01-expired",
+            expiresAt: Self.referenceDate.addingTimeInterval(-60),
+            subscriptionType: "max",
+            scopes: []
+        )
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: MockClaudeCodeCredentialsService(result: .success(expiredCredentials)),
+            apiService: SequencedUsageAPIService(results: [.success(Self.sampleSnapshot())]),
+            userDefaults: defaults
+        )
+
+        _ = await repository.refresh(now: Self.referenceDate)
+
+        // Leaving the deadline in the past is what let the polling loop — which sleeps until
+        // exactly this instant — collapse to its floor and re-read the Keychain in a tight loop
+        // for as long as the token stayed expired.
+        #expect(abs(repository.nextAllowedFetch.timeIntervalSince(Self.referenceDate) - 180) < 1)
+    }
+
+    @Test("A Keychain read failure still arms the fetch interval")
+    func credentialsFailureAdvancesNextAllowedFetch() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: MockClaudeCodeCredentialsService(result: .failure(.itemNotFound)),
+            apiService: SequencedUsageAPIService(results: [.success(Self.sampleSnapshot())]),
+            userDefaults: defaults
+        )
+
+        _ = await repository.refresh(now: Self.referenceDate)
+
+        #expect(abs(repository.nextAllowedFetch.timeIntervalSince(Self.referenceDate) - 180) < 1)
+    }
+
+    @Test("The authorization retry ignores the interval a denial just armed")
+    func retryIgnoringThrottleBypassesTheArmedInterval() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let credentialsService: SequencedCredentialsService = SequencedCredentialsService(
+            results: [.failure(.userDeniedAccess), .success(Self.validCredentials())]
+        )
+        let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [.success(Self.sampleSnapshot())])
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: credentialsService,
+            apiService: apiService,
+            userDefaults: defaults
+        )
+
+        let denied: UsageRepositoryResult = await repository.refresh(now: Self.referenceDate)
+        #expect(denied == .failure(.credentialsUnavailable(.userDeniedAccess)))
+
+        // An ordinary refresh one second later is inside the interval the denial just armed, so it
+        // would never re-read the Keychain — which is the whole point of pressing "Reintentar".
+        let retried: UsageRepositoryResult = await repository.retryIgnoringThrottle(
+            now: Self.referenceDate.addingTimeInterval(1)
+        )
+
+        guard case .fresh = retried else { Issue.record("expected .fresh, got \(retried)"); return }
+        #expect(apiService.callCount == 1)
+    }
+
     @Test("Session-expired states take priority over a stale cached snapshot, not masked by it")
     func sessionExpiredIsNotMaskedByStaleCache() async throws {
         let defaults: UserDefaults = Self.freshDefaults()

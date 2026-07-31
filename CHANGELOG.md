@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-31
+
+### Fixed
+
+- Con el token vencido o sin sesión de Claude Code, la app leía el llavero una vez por segundo de
+  forma indefinida. `UsageRepository.refresh()` volvía por esos caminos sin registrar el intento,
+  así que `nextAllowedFetch` quedaba en el pasado y el bucle de polling —que duerme justo hasta
+  esa marca— colapsaba a su piso de 1 segundo. Ahora todo retorno posterior al guard de throttle
+  arma el intervalo, y el piso del bucle pasó de 1s a 60s para que un descuido futuro degrade en
+  un reintento lento y no en un spin.
+- El «Reintentar» del llavero denegado ya no queda bloqueado por el intervalo que armó la propia
+  denegación: es el único camino que puede ignorarlo, y sólo puede dispararlo una persona, porque
+  el bucle de polling está detenido en ese estado.
+
 ## [1.1.0] - 2026-07-31
 
 ### Changed
