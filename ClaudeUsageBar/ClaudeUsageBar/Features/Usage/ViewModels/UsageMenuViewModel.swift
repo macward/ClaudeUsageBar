@@ -10,9 +10,23 @@ internal enum UsageMenuState: Equatable {
     case loading
     case fresh(UsageDetailData)
     case stale(UsageDetailData, age: TimeInterval)
+    /// No snapshot has ever landed *and* the repository is refusing to fetch. Once any snapshot
+    /// exists this case is unreachable: a throttle then travels on
+    /// ``UsageMenuViewModel/throttledUntil`` instead, leaving the data on screen.
     case throttled(until: Date)
     case sessionExpired
     case error(UsageMenuError)
+
+    /// Whether this case carries usage numbers the user can currently read. Drives the decision to
+    /// preserve rather than replace the screen when a refresh is refused.
+    internal var showsUsageData: Bool {
+        switch self {
+        case .fresh, .stale:
+            return true
+        case .onboarding, .loading, .throttled, .sessionExpired, .error:
+            return false
+        }
+    }
 }
 
 /// Everything the popover's detail view needs, already resolved — the label only ever needs
@@ -69,6 +83,20 @@ internal final class UsageMenuViewModel {
     /// ``retryAuthorization()``, driven by an explicit user action, resumes from here.
     internal private(set) var isAwaitingAuthorizationRetry: Bool = false
 
+    /// When the repository will next allow a fetch, set only when it has actually refused one.
+    /// `nil` whenever the last result came back from the network (or cache).
+    ///
+    /// Deliberately a separate axis from ``state``: a throttle is a fact about the *next fetch*,
+    /// not about the data already on screen. Folding it into `state` is what used to blank the
+    /// popover — and the menu bar percentage with it — the moment a refresh landed inside the
+    /// repository's 180s window, replacing a good snapshot with a bare countdown.
+    ///
+    /// No view renders it today (the manual refresh action it used to gate is gone). It stays
+    /// because it is the only externally visible evidence that a call actually reached the
+    /// repository and was refused, which is what distinguishes a repository throttle from the
+    /// ViewModel's own popover TTL declining to ask at all.
+    internal private(set) var throttledUntil: Date?
+
     private let repository: UsageRepository
     private let userDefaults: UserDefaults
     private let isPollingEnabled: Bool
@@ -79,7 +107,10 @@ internal final class UsageMenuViewModel {
     /// When the snapshot currently reflected in `state` was actually fetched — reconstructed
     /// from `.fresh`'s implicit "now" or `.stale`'s explicit `age`. `nil` until the first
     /// successful (fresh or stale) result ever lands.
-    private var currentSnapshotFetchedAt: Date?
+    ///
+    /// Exposed because the popover shows it: with no manual refresh action left, the age of the
+    /// data is the only thing that answers "is this number current?".
+    internal private(set) var currentSnapshotFetchedAt: Date?
 
     internal init(repository: UsageRepository, isPollingEnabled: Bool, userDefaults: UserDefaults) {
         self.repository = repository
@@ -198,6 +229,24 @@ internal final class UsageMenuViewModel {
     }
 
     private func apply(_ result: UsageRepositoryResult) {
+        // A throttle is the one result that must not clobber what is already displayed, so it is
+        // handled apart from the cases that genuinely replace the screen.
+        guard case .throttled(let until) = result else {
+            throttledUntil = nil
+            applyResolved(result)
+            return
+        }
+
+        throttledUntil = until
+        // Taking over the screen is right only when there is nothing to preserve — a first launch
+        // throttled before any snapshot ever landed. Otherwise the numbers stay put and the wait
+        // shows up next to the (now disabled) refresh action.
+        if !state.showsUsageData {
+            state = .throttled(until: until)
+        }
+    }
+
+    private func applyResolved(_ result: UsageRepositoryResult) {
         switch result {
         case .fresh(let snapshot):
             currentSnapshotFetchedAt = Date()
@@ -205,8 +254,10 @@ internal final class UsageMenuViewModel {
         case .stale(let snapshot, let age):
             currentSnapshotFetchedAt = Date().addingTimeInterval(-age)
             state = Self.deriveDetailData(from: snapshot).map { .stale($0, age: age) } ?? .error(.noUsableData)
-        case .throttled(let until):
-            state = .throttled(until: until)
+        case .throttled:
+            // Routed away by `apply(_:)`; kept exhaustive rather than defaulted so a new result
+            // case cannot slip through unhandled.
+            break
         case .sessionExpired:
             state = .sessionExpired
         case .failure(let error):

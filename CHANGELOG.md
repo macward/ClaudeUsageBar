@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-31
+
+### Changed
+
+- Rediseño del popover siguiendo el diseño «Naranja Claude» 5c: fondo cálido oscuro, barra de
+  progreso por ventana con degradado ámbar→terracota, filas a ancho completo separadas por reglas
+  finas y botones propios con estado hover. En apariencia clara se usa la variante crema 5b.
+- El color del porcentaje y del degradado ahora escala con la severidad (ámbar → terracota → rojo),
+  de modo que la barra concuerda con el icono de la menu bar en vez de contradecirlo.
+
+### Removed
+
+- El botón «Actualizar» del popover. No podía cumplir lo que ofrecía: el repositorio permite un
+  fetch cada 180s y el bucle de polling ya duerme exactamente hasta ese instante y consulta
+  entonces, con el despertar del sistema y la apertura del popover cubiertos aparte. Sólo podía
+  repetir trabajo que la app iba a hacer igual, o negarse. En su lugar el pie del popover muestra
+  «Actualizado hace …», que es la pregunta que el botón intentaba responder. El «Reintentar» de
+  acceso al llavero denegado —el único reintento realmente accionable— se mantiene.
+
+### Fixed
+
+- Un refresco dentro del intervalo mínimo de 180s ya no borra el consumo de la pantalla: el
+  throttle dejó de ser un estado de los datos y pasó a ser un estado de la acción. Los números se
+  quedan donde están y el porcentaje de la menu bar deja de caer a «—».
+- El texto de la espera ya no se dibujaba dos veces, y ahora dice «Reintentando en …» en vez de
+  «Podés reintentar en …», que pedía una acción que ya no existe.
+
 ## [1.0.0] - 2026-07-31
 
 ### Added

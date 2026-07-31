@@ -1,24 +1,39 @@
 import SwiftUI
 
-/// Pure composite: one usage window's title, percent, and a relative + absolute reset time.
-/// No dependencies, no ViewModel — configured entirely through its parameters, reusable for
-/// the 5h window, the weekly window, and any per-limit entry. The title travels inside
-/// ``UsageDisplayState`` because deciding it (mapping an endpoint key to a label) is logic that
-/// belongs to the ViewModel, not here.
+/// Pure composite: one usage window's title, percent, the amber→terracotta bar from design 5c, and
+/// a relative + absolute reset time. No dependencies, no ViewModel — configured entirely through
+/// its parameters, reusable for the 5h window, the weekly window, and any per-limit entry. The
+/// title travels inside ``UsageDisplayState`` because deciding it (mapping an endpoint key to a
+/// label) is logic that belongs to the ViewModel, not here.
+///
+/// It owns its own horizontal padding so the row's separator, drawn by the container, can run edge
+/// to edge the way the design has it.
 internal struct UsageWindowRowView: View {
 
+    // MARK: - Properties
+
     internal let display: UsageDisplayState
+    internal let palette: UsagePalette
+
+    // MARK: - Body
 
     internal var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        VStack(alignment: .leading, spacing: UsageMetrics.rowSpacing) {
+            HStack(alignment: .firstTextBaseline) {
                 Text(display.title)
-                    .font(.headline)
-                Spacer()
+                    .font(UsageMetrics.titleFont)
+                    .foregroundStyle(palette.title)
+                Spacer(minLength: 8)
                 Text("\(display.percentUsed)%")
-                    .font(.headline)
-                    .foregroundStyle(Self.color(for: display.severity))
+                    .font(UsageMetrics.percentFont)
+                    .foregroundStyle(palette.percentColor(for: display.severity))
             }
+
+            UsageProgressBarView(
+                percentUsed: display.percentUsed,
+                severity: display.severity,
+                palette: palette
+            )
 
             // The countdown ticks once a minute via TimelineView, never on every second —
             // this view holds no Timer of its own. The tick's own date drives the formatter, so
@@ -27,21 +42,15 @@ internal struct UsageWindowRowView: View {
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 HStack {
                     Text("Reinicia en \(RemainingTimeFormatter.duration(until: display.resetsAt, now: context.date))")
-                    Spacer()
+                    Spacer(minLength: 8)
                     Text(display.resetsAt, format: .dateTime.hour().minute())
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(UsageMetrics.captionFont)
+                .foregroundStyle(palette.secondaryText)
             }
         }
-    }
-
-    private static func color(for severity: UsageDisplayState.Severity) -> Color {
-        switch severity {
-        case .normal: return .green
-        case .warning: return .orange
-        case .critical: return .red
-        case .unknown: return .secondary
-        }
+        .padding(.horizontal, UsageMetrics.rowHorizontalPadding)
+        .padding(.top, UsageMetrics.rowTopPadding)
+        .padding(.bottom, UsageMetrics.rowBottomPadding)
     }
 }

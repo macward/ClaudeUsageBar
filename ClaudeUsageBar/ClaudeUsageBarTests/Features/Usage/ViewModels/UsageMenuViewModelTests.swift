@@ -64,10 +64,57 @@ struct UsageMenuViewModelTests {
         await viewModel.refresh()
 
         #expect(apiService.callCount == 1)
+        #expect(viewModel.throttledUntil != nil)
+    }
+
+    @Test("A throttled refresh keeps the snapshot already on screen instead of blanking it")
+    func throttledRefreshPreservesDisplayedSnapshot() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [.success(Self.sampleSnapshot(percent: 30))])
+        let repository: UsageRepository = Self.makeRepository(apiService: apiService, defaults: defaults)
+        defaults.set(true, forKey: "com.maxward.ClaudeUsageBar.hasCompletedOnboarding")
+        let viewModel: UsageMenuViewModel = UsageMenuViewModel(
+            repository: repository,
+            isPollingEnabled: false,
+            userDefaults: defaults
+        )
+
+        await viewModel.refresh()
+        #expect(viewModel.throttledUntil == nil)
+
+        // Pressing "Actualizar" inside the repository's 180s window used to replace the whole
+        // popover — and the menu bar percentage with it — with a bare "podés reintentar en 2m".
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected the snapshot to survive the throttle, got \(viewModel.state)"); return
+        }
+        #expect(detail.dominant.percentUsed == 30)
+        #expect(viewModel.throttledUntil != nil)
+    }
+
+    @Test("A throttle before any snapshot has landed does take over the screen")
+    func throttleWithoutAnySnapshotBecomesThrottledState() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        // Fails without a cache to fall back on, so nothing is ever displayable; the failure still
+        // arms the repository's 180s throttle, which the next call runs into.
+        let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [.failure(.offline)])
+        let repository: UsageRepository = Self.makeRepository(apiService: apiService, defaults: defaults)
+        defaults.set(true, forKey: "com.maxward.ClaudeUsageBar.hasCompletedOnboarding")
+        let viewModel: UsageMenuViewModel = UsageMenuViewModel(
+            repository: repository,
+            isPollingEnabled: false,
+            userDefaults: defaults
+        )
+
+        await viewModel.refresh()
+        await viewModel.refresh()
+
         guard case .throttled = viewModel.state else {
             Issue.record("expected .throttled, got \(viewModel.state)"); return
         }
     }
+
 
     @Test("A stale repository result maps to .stale with its age")
     func staleRepositoryResultMapsToStaleState() async throws {
@@ -644,11 +691,13 @@ struct UsageMenuViewModelTests {
 
         await viewModel.refreshOnPopoverOpen()
 
-        // The ViewModel's own TTL gate let the call through to the repository — proven by the
-        // state changing to .throttled, which only the repository (not the ViewModel) can
-        // produce. The repository's own 180s post-attempt throttle is a separate, already
-        // covered concern (see UsageRepositoryTests), which is why callCount stays at 1 here.
-        guard case .throttled = viewModel.state else { Issue.record("expected .throttled, got \(viewModel.state)"); return }
+        // The ViewModel's own TTL gate let the call through to the repository — proven by
+        // `throttledUntil` becoming set, which only a repository refusal can produce. The
+        // repository's own 180s post-attempt throttle is a separate, already covered concern (see
+        // UsageRepositoryTests), which is why callCount stays at 1 here.
+        #expect(viewModel.throttledUntil != nil)
+        // And the refusal left the stale snapshot on screen rather than replacing it.
+        guard case .stale = viewModel.state else { Issue.record("expected .stale, got \(viewModel.state)"); return }
     }
 
     @Test("Before onboarding completes, neither the Keychain nor the network is touched — even with polling on")
