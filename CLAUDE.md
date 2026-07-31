@@ -47,7 +47,8 @@ Tercera fuente disponible pero no usada: Claude Code ya empuja `rate_limits.five
 Implicaciones de diseño:
 
 - **Polling caro y frágil**: TTL de 180s, backoff exponencial 3→6→12→15min cap en 429. Nunca poll agresivo.
-- **Nunca refrescar el token**: el `accessToken` caduca cada ~8h y Claude Code lo renueva solo. Re-leer el Keychain en cada llamada, nunca cachear el token. Si la app refrescara, rotaría el refresh token y rompería el login del usuario.
+- **Nunca refrescar el token**: el `accessToken` caduca cada ~8h y Claude Code lo renueva solo. Si la app refrescara, rotaría el refresh token y rompería el login del usuario.
+- **Leer el Keychain lo menos posible, y sólo en memoria.** Cada lectura es un prompt potencial de SecurityAgent (ver "Known Issues"), así que `UsageRepository` conserva las credenciales en memoria hasta 5 min antes de `expiresAt` en vez de releer en cada fetch. El token **nunca** se persiste. La rotación se detecta releyendo: al vencer esa copia, ante un 401, y en el «Reintentar» tras una denegación.
 - **Nunca loguear ni renderizar el token.** El único campo sensible que la app toca.
 - El parseo de `.jsonl`, si se implementa, debe ser **incremental y tolerante a fallos**: crecen mientras se leen, tienen líneas parciales al final y tipos de evento desconocidos. Nunca fallar todo el parseo por una línea inválida.
 
@@ -238,6 +239,7 @@ Completion handlers · `DispatchQueue.main.async` · `Task { @MainActor in }` es
 Hallazgos del spike (2026-07-30), todos verificados corriendo la app real sandboxed + hardened runtime + firmada:
 
 - **El Keychain cross-app funciona, pero con prompt.** Una app sandboxed *sí* puede leer el item que escribió el CLI `claude` (`errSecSuccess`), pero el primer arranque levanta un diálogo de `SecurityAgent` pidiendo autorización. No es transparente: el onboarding tiene que anticiparlo, y hasta que el usuario acepte, la llamada **bloquea**.
+- **«Permitir siempre» no dura.** El CLI escribe sus credenciales con `security add-generic-password -U` (verificado con `grep` sobre el binario de `claude`), y esa reescritura descarta la entrada de ACL que el usuario concedió. Cada reescritura del item —cada refresh del token OAuth y de cada token OAuth de MCP, o sea varias veces al día— hace que la siguiente lectura vuelva a pedir la contraseña. La app no puede evitarlo; sólo puede leer con menos frecuencia para que varias reescrituras seguidas cuesten un único prompt. De ahí la caché en memoria del token: releer en cada poll convertía cada reescritura en un prompt a los 3 minutos.
 - **`ENABLE_USER_SELECTED_FILES = readonly` no alcanza para `~/.claude`.** Bajo sandbox `NSHomeDirectory()` se redirige al container. Trampa concreta: `FileManager.fileExists` sobre la ruta real devuelve `true`, pero `enumerator(atPath:)` rinde **cero** entradas y no lanza error — el sandbox permite `stat` y niega lectura. Un chequeo de existencia da falso positivo; hay que verificar apertura real de un archivo.
 - **Los timestamps del endpoint rompen `.iso8601`.** Llegan con 6 dígitos fraccionarios (`2026-07-30T06:29:59.393695+00:00`). Hace falta `ISO8601DateFormatter` con `.withFractionalSeconds` más fallback sin fracción.
 - **El `User-Agent` está pinneado a mano** (`claude-code/2.1.220`). Una app sandboxed no puede ejecutar `claude --version`, y sin el header correcto el endpoint devuelve 429 persistentes durante horas. Es el punto de mantenimiento más frágil del diseño.

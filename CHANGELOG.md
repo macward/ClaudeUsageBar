@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-07-31
+
+### Fixed
+
+- La app pedía la contraseña del llavero constantemente. Leía el token en cada ciclo de polling
+  (unas 20 veces por hora) y el CLI `claude` reescribe su item con
+  `security add-generic-password -U`, lo que descarta la autorización que el usuario concedió con
+  «Permitir siempre»: cada reescritura se convertía en un prompt nuevo a los 3 minutos. Ahora
+  `UsageRepository` mantiene el token en memoria —nunca en disco— hasta 5 minutos antes de su
+  `expiresAt`, así que todas las reescrituras intermedias se agrupan en un solo prompt. La rotación
+  se sigue detectando: un 401 y el «Reintentar» del llavero denegado descartan la copia en memoria
+  y releen el llavero.
+- Con la sesión de Claude Code caída, el reintento pasa de 3 a 15 minutos. Ese estado relee el
+  llavero en cada intento, así que al intervalo base era un prompt posible cada 3 minutos mientras
+  el usuario estuviera deslogueado.
+
 ## [1.1.1] - 2026-07-31
 
 ### Fixed

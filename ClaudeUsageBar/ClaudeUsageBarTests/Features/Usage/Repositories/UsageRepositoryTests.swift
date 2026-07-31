@@ -187,8 +187,10 @@ struct UsageRepositoryTests {
 
         // Leaving the deadline in the past is what let the polling loop — which sleeps until
         // exactly this instant — collapse to its floor and re-read the Keychain in a tight loop
-        // for as long as the token stayed expired.
-        #expect(abs(repository.nextAllowedFetch.timeIntervalSince(Self.referenceDate) - 180) < 1)
+        // for as long as the token stayed expired. A dead session gets the longer interval rather
+        // than the baseline 180s: it re-reads the Keychain on every attempt, so each one is a
+        // possible SecurityAgent prompt.
+        #expect(abs(repository.nextAllowedFetch.timeIntervalSince(Self.referenceDate) - 900) < 1)
     }
 
     @Test("A Keychain read failure still arms the fetch interval")
@@ -383,6 +385,119 @@ struct UsageRepositoryTests {
         let cachedData: Data = try #require(defaults.data(forKey: "com.maxward.ClaudeUsageBar.cachedUsageSnapshot"))
         let cachedString: String = String(decoding: cachedData, as: UTF8.self)
         #expect(!cachedString.contains(secretToken))
+    }
+
+    @Test("A still-valid token is reused from memory, so repeated fetches read the Keychain once")
+    func validTokenIsReadFromTheKeychainOnlyOnce() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let credentialsService: SequencedCredentialsService = SequencedCredentialsService(
+            results: [.success(Self.validCredentials())]
+        )
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: credentialsService,
+            apiService: SequencedUsageAPIService(results: [.success(Self.sampleSnapshot())]),
+            userDefaults: defaults
+        )
+
+        // Three fetches spaced past the 180s interval — the same cadence the polling loop runs at.
+        for step: Int in 0..<3 {
+            _ = await repository.refresh(now: Self.referenceDate.addingTimeInterval(Double(step) * 200))
+        }
+
+        // Every Keychain read is a possible SecurityAgent prompt: `claude` rewrites its item with
+        // `security add-generic-password -U`, which drops the "Permitir siempre" grant, so reading
+        // once per poll turned each rewrite into a prompt within three minutes.
+        #expect(credentialsService.callCount == 1)
+    }
+
+    @Test("A token within five minutes of expiry is re-read rather than reused")
+    func tokenNearExpiryIsReRead() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let credentialsService: SequencedCredentialsService = SequencedCredentialsService(results: [
+            .success(ClaudeCodeCredentials(
+                accessToken: "sk-ant-oat01-almost-done",
+                expiresAt: Self.referenceDate.addingTimeInterval(400),
+                subscriptionType: "max",
+                scopes: []
+            )),
+            .success(Self.validCredentials(token: "sk-ant-oat01-rotated"))
+        ])
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: credentialsService,
+            apiService: SequencedUsageAPIService(results: [.success(Self.sampleSnapshot())]),
+            userDefaults: defaults
+        )
+
+        _ = await repository.refresh(now: Self.referenceDate)
+        // 200s later the cached token has 200s of life left — inside the 300s margin, so it must
+        // be swapped before the API starts answering 401 rather than after.
+        _ = await repository.refresh(now: Self.referenceDate.addingTimeInterval(200))
+
+        #expect(credentialsService.callCount == 2)
+    }
+
+    @Test("The authorization retry always re-reads the Keychain, never the in-memory token")
+    func authorizationRetryDiscardsTheInMemoryToken() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let credentialsService: SequencedCredentialsService = SequencedCredentialsService(
+            results: [.success(Self.validCredentials())]
+        )
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: credentialsService,
+            apiService: SequencedUsageAPIService(results: [.success(Self.sampleSnapshot())]),
+            userDefaults: defaults
+        )
+
+        _ = await repository.refresh(now: Self.referenceDate)
+        #expect(credentialsService.callCount == 1)
+
+        // Reusing the in-memory copy here would make "Reintentar" a no-op against the exact
+        // failure it exists for: the Keychain refusing the read.
+        _ = await repository.retryIgnoringThrottle(now: Self.referenceDate.addingTimeInterval(1))
+
+        #expect(credentialsService.callCount == 2)
+    }
+
+    @Test("A 401 re-reads the Keychain even with a token still cached in memory")
+    func unauthorizedBypassesTheInMemoryToken() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let credentialsService: SequencedCredentialsService = SequencedCredentialsService(results: [
+            .success(Self.validCredentials(token: "sk-ant-oat01-old")),
+            .success(Self.validCredentials(token: "sk-ant-oat01-new"))
+        ])
+        let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [
+            .failure(.unauthorized),
+            .success(Self.sampleSnapshot())
+        ])
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: credentialsService,
+            apiService: apiService,
+            userDefaults: defaults
+        )
+
+        let result: UsageRepositoryResult = await repository.refresh(now: Self.referenceDate)
+
+        // The token in memory is exactly the one the server just rejected, so rotation can only be
+        // picked up by going back to the Keychain.
+        guard case .fresh = result else { Issue.record("expected .fresh, got \(result)"); return }
+        #expect(credentialsService.callCount == 2)
+    }
+
+    @Test("A dead session backs off to 15 minutes, not the baseline interval")
+    func sessionExpiredArmsTheLongerInterval() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: MockClaudeCodeCredentialsService(result: .success(Self.validCredentials())),
+            apiService: SequencedUsageAPIService(results: [.failure(.unauthorized)]),
+            userDefaults: defaults
+        )
+
+        let result: UsageRepositoryResult = await repository.refresh(now: Self.referenceDate)
+
+        #expect(result == .sessionExpired)
+        // This state re-reads the Keychain on every attempt, so at the baseline 180s it would be a
+        // possible prompt every three minutes for as long as the user stayed logged out.
+        #expect(abs(repository.nextAllowedFetch.timeIntervalSince(Self.referenceDate) - 900) < 1)
     }
 
     // MARK: - Private Helpers
