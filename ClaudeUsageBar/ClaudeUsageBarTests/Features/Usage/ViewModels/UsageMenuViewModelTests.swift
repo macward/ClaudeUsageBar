@@ -386,6 +386,129 @@ struct UsageMenuViewModelTests {
         #expect(detail.limits.first?.title.isEmpty == false)
     }
 
+    /// Reproduces the exact payload the endpoint returns when a per-model weekly cap is in play:
+    /// both named windows restated in `limits[]`, plus a `weekly_scoped` entry that is the only
+    /// place the model name appears. The two restatements collapse; the per-model cap survives and
+    /// names its model.
+    @Test("A per-model weekly cap is shown with its model name")
+    func perModelWeeklyCapIsShownWithModelName() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let sessionReset: Date = Date().addingTimeInterval(3600)
+        let weeklyReset: Date = Date().addingTimeInterval(86_400)
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 22, resetsAt: sessionReset),
+            sevenDay: UsageSnapshot.Window(utilization: 33, resetsAt: weeklyReset),
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "session", group: "session", percent: 22, severity: "normal",
+                    resetsAt: sessionReset, isActive: false
+                ),
+                UsageSnapshot.Limit(
+                    kind: "weekly_all", group: "weekly", percent: 33, severity: "normal",
+                    resetsAt: weeklyReset, isActive: true
+                ),
+                UsageSnapshot.Limit(
+                    kind: "weekly_scoped", group: "weekly", percent: 8, severity: "normal",
+                    resetsAt: weeklyReset.addingTimeInterval(-1), isActive: false,
+                    scope: UsageSnapshot.Scope(model: UsageSnapshot.Scope.Model(id: nil, displayName: "Fable"))
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.count == 1)
+        #expect(detail.limits.first?.title == "Semanal · Fable")
+        #expect(detail.limits.first?.percentUsed == 8)
+    }
+
+    /// `is_active` does not mean "this cap applies to you" — the endpoint reports the live session
+    /// window as false while it is plainly running, and flags only the single highest limit. A
+    /// limit must therefore be shown on its data, never on that flag.
+    @Test("A limit flagged is_active false is still shown")
+    func inactiveLimitIsStillShown() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 22, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: nil,
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "weekly_scoped", group: "weekly", percent: 8, severity: "normal",
+                    resetsAt: Date().addingTimeInterval(86_400), isActive: false,
+                    scope: UsageSnapshot.Scope(model: UsageSnapshot.Scope.Model(id: nil, displayName: "Fable"))
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.count == 1)
+        #expect(detail.limits.first?.percentUsed == 8)
+    }
+
+    /// The server resets the per-model cap at `23:59:59` and the weekly window at `00:00:00` the
+    /// next day — under a second apart, well inside `duplicateResetTolerance`. Only the model scope
+    /// keeps the row alive, so this guards the row against a future alias change.
+    @Test("A per-model cap resetting a second before the weekly window survives dedup")
+    func perModelCapResettingJustBeforeWeeklyWindowIsKept() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let weeklyReset: Date = Date().addingTimeInterval(86_400)
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: nil,
+            sevenDay: UsageSnapshot.Window(utilization: 33, resetsAt: weeklyReset),
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "weekly", group: "weekly", percent: 8, severity: "normal",
+                    resetsAt: weeklyReset.addingTimeInterval(-1), isActive: false,
+                    scope: UsageSnapshot.Scope(model: UsageSnapshot.Scope.Model(id: nil, displayName: "Fable"))
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.count == 1)
+        #expect(detail.limits.first?.title == "Semanal · Fable")
+    }
+
+    /// A scoped entry whose group this build doesn't recognize still has to name its model rather
+    /// than fall back to humanizing `kind`.
+    @Test("A scoped limit with an unknown group falls back to the bare model name")
+    func scopedLimitWithUnknownGroupUsesModelName() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 22, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: nil,
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "tangelo", group: "iguana_necktie", percent: 8, severity: "normal",
+                    resetsAt: Date().addingTimeInterval(86_400), isActive: false,
+                    scope: UsageSnapshot.Scope(model: UsageSnapshot.Scope.Model(id: nil, displayName: "Fable"))
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.first?.title == "Fable")
+    }
+
     /// Key matching is case-insensitive on purpose — the endpoint is undocumented, and a casing
     /// change on its side must not resurrect the duplicate row.
     @Test("Key matching ignores casing, so a re-cased weekly key is still deduplicated")

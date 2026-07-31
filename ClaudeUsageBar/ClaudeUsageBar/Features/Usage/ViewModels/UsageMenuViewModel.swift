@@ -240,16 +240,33 @@ internal final class UsageMenuViewModel {
         let fiveHour: UsageDisplayState? = windowDisplayState(kind: "five_hour", window: snapshot.fiveHour)
         let sevenDay: UsageDisplayState? = windowDisplayState(kind: "seven_day", window: snapshot.sevenDay)
         let namedWindows: [UsageDisplayState] = [fiveHour, sevenDay].compactMap { $0 }
-        let activeLimits: [UsageDisplayState] = activeLimitDisplayStates(from: snapshot)
-            .filter { !isDuplicate($0, of: namedWindows) }
+        let extraLimits: [UsageDisplayState] = (snapshot.limits ?? []).compactMap { limit in
+            guard let display = limitDisplayState(limit) else { return nil }
+            // A per-model cap is never a restatement of a named window, whatever its reset lands
+            // on, so it skips the duplicate check entirely rather than relying on its `kind` not
+            // being a known alias. See ``isDuplicate(_:of:)`` for why that distinction matters.
+            guard limit.scope?.model?.displayName == nil else { return display }
+            return isDuplicate(display, of: namedWindows) ? nil : display
+        }
 
-        return UsageDetailData(dominant: dominant, fiveHour: fiveHour, sevenDay: sevenDay, limits: activeLimits)
+        return UsageDetailData(dominant: dominant, fiveHour: fiveHour, sevenDay: sevenDay, limits: extraLimits)
     }
 
-    private static func activeLimitDisplayStates(from snapshot: UsageSnapshot) -> [UsageDisplayState] {
-        (snapshot.limits ?? [])
-            .filter { $0.isActive == true }
-            .compactMap(limitDisplayState)
+    /// Every entry in `limits[]` that carries a usable percentage — deliberately *not* filtered by
+    /// `is_active`.
+    ///
+    /// That filter used to be here and was wrong: the endpoint reports the live session window as
+    /// `is_active: false` while it sits at 22% with hours left on the clock, and marks only the
+    /// single highest limit as `true`. So the flag doesn't mean "this cap applies to you" — it
+    /// looks like "this is the cap currently closest to binding". Filtering on it silently dropped
+    /// real limits, most visibly the per-model weekly cap (`weekly_scoped`, e.g. Fable), which is
+    /// the whole point of showing this list.
+    ///
+    /// Restatements of the two named windows are removed by ``isDuplicate(_:of:)`` at the call
+    /// site instead, which keys off scope and reset time — facts about the window itself rather
+    /// than a flag whose meaning is inferred.
+    private static func limitDisplayStates(from snapshot: UsageSnapshot) -> [UsageDisplayState] {
+        (snapshot.limits ?? []).compactMap(limitDisplayState)
     }
 
     /// The server reports the weekly window twice: once as `seven_day`, and again as a
@@ -283,12 +300,48 @@ internal final class UsageMenuViewModel {
     /// makes a legitimate row disappear silently, whereas an unrecognized key merely shows an
     /// extra row. Under-matching is the safe failure here, so new aliases get added when they're
     /// seen, not in anticipation.
+    ///
+    /// **`weekly_scoped` must never be added here.** It reads like a weekly alias and isn't — it's
+    /// the per-model cap, and the server resets it at `23:59:59` against the weekly window's
+    /// `00:00:00` the next day: under a second apart, far inside ``duplicateResetTolerance``. As an
+    /// alias it would match the weekly window on both halves and the per-model row would vanish
+    /// without a trace. The call site guards this independently by skipping the duplicate check for
+    /// anything carrying a model scope, so this is defence in depth rather than the only barrier.
     private static func scopeAlias(for kind: String) -> String? {
         switch kind.lowercased() {
         case "session", "five_hour":
             return "five_hour"
         case "weekly", "weekly_all", "seven_day":
             return "seven_day"
+        default:
+            return nil
+        }
+    }
+
+    /// Row title for a `limits[]` entry, model scope included when the entry carries one.
+    ///
+    /// A scoped entry's `kind` is just `weekly_scoped` — the model it caps lives only in
+    /// `scope.model.display_name`, so without this the row would read "Weekly scoped" and never
+    /// name the model. Composed against `group` rather than `kind` because `group` is the coarse,
+    /// stable axis (`session`/`weekly`) while `kind` is where new variants keep appearing.
+    ///
+    /// With a model but no recognizable group, the model name stands alone: a row reading "Fable"
+    /// is still useful, "Weekly scoped" is not.
+    private static func title(for limit: UsageSnapshot.Limit, kind: String) -> String {
+        guard let model = limit.scope?.model?.displayName, !model.isEmpty else {
+            return title(forKind: kind)
+        }
+        guard let base = groupTitle(for: limit.group ?? kind) else { return model }
+        return "\(base) · \(model)"
+    }
+
+    /// The coarse window a limit belongs to, or nil when the group isn't one this build knows.
+    private static func groupTitle(for group: String) -> String? {
+        switch group.lowercased() {
+        case "session", "five_hour":
+            return "Últimas 5 horas"
+        case "weekly", "seven_day":
+            return "Semanal"
         default:
             return nil
         }
@@ -350,7 +403,7 @@ internal final class UsageMenuViewModel {
             return sevenDay
         }
 
-        return activeLimitDisplayStates(from: snapshot).max { $0.percentUsed < $1.percentUsed }
+        return limitDisplayStates(from: snapshot).max { $0.percentUsed < $1.percentUsed }
     }
 
     private static func limitDisplayState(_ limit: UsageSnapshot.Limit) -> UsageDisplayState? {
@@ -360,7 +413,7 @@ internal final class UsageMenuViewModel {
             percentUsed: Int(percent.rounded()),
             severity: severity(forPercent: percent),
             windowKind: kind,
-            title: title(forKind: kind),
+            title: title(for: limit, kind: kind),
             resetsAt: resetsAt
         )
     }
