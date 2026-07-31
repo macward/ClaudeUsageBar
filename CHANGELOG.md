@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-31
+
 ### Added
 
+- Primera versión distribuible: DMG firmado con Developer ID y notarizado por Apple, con
+  `scripts/release.sh` para reproducir el empaquetado completo (tests, archive, export, firma,
+  notarización, staple y verificación con Gatekeeper).
+- Icono de la app en todos los tamaños de macOS.
+- Los límites semanales por modelo se muestran con el nombre del modelo en el título
+  («Semanal · Fable»), leídos de `limits[].scope.model.display_name`.
 - Monitor de consumo en la menu bar: muestra el porcentaje de la ventana de 5 horas (la sesión)
   sin abrir el popover, y el detalle de ambas ventanas, sus límites por modelo activos, el tiempo
   hasta el reset —en horas y minutos, o días y horas según la escala— y la antigüedad del dato al
@@ -32,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - La scene principal pasa de `WindowGroup` a `MenuBarExtra`.
+- El deployment target baja de macOS 26.5 a macOS 14.0 (Sonoma), que es el piso real que imponen
+  `@Observable` y `.environment(_:)`. Con 26.5 la app solo corría en la última versión del sistema.
+
+### Fixed
+
+- El límite semanal por modelo no aparecía en el popover. El endpoint marca `is_active: true`
+  únicamente en el límite más cercano a su tope, no en todos los que aplican, así que filtrar por
+  ese flag descartaba en silencio límites reales. Ahora se listan todos los que traen un porcentaje
+  usable y la deduplicación contra las ventanas nombradas se hace por scope y hora de reset.
 
 ### Removed
 
@@ -41,3 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   se reducen a `app-sandbox` y `network.client`.
 - `Item.swift`, `ContentView.swift` y el `ModelContainer` de SwiftData (residuos del template de
   Xcode, incluido el `fatalError` de creación del contenedor).
+- El target `ClaudeUsageBarUITests`, que no aportaba cobertura real y provocaba cuelgues al
+  ejecutarse.
+
+[1.0.0]: https://github.com/macward/ClaudeUsageBar/releases/tag/v1.0.0

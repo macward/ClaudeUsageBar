@@ -15,7 +15,9 @@ xcuserdata/
 
 ## Xcode — build output
 build/
+dist/
 DerivedData/
+*.xcarchive
 *.hmap
 *.ipa
 *.dSYM.zip
