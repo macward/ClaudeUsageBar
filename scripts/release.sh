@@ -87,10 +87,19 @@ DMG_PATH="$DIST_DIR/ClaudeUsageBar-${VERSION}.dmg"
 # descubrirlo después de esperar el veredicto de Apple.
 info "Verificando la firma"
 codesign --verify --strict --verbose=2 "$APP_PATH"
-codesign -d --entitlements - --verbose=2 "$APP_PATH" 2>&1 | grep -q "app-sandbox" \
+
+# El output se captura antes de filtrar en vez de encadenar `codesign | grep -q`: bajo
+# `set -o pipefail`, el `grep -q` corta al primer match y le manda SIGPIPE a codesign, con lo
+# que el pipeline devuelve 141 y la verificación falla justo cuando debería pasar.
+SIGN_INFO="$(codesign -d --verbose=2 "$APP_PATH" 2>&1)"
+ENTITLEMENTS="$(codesign -d --entitlements - --verbose=2 "$APP_PATH" 2>&1)"
+
+grep -q "app-sandbox" <<<"$ENTITLEMENTS" \
   || { echo "ERROR: la app perdió el entitlement de sandbox"; exit 1; }
-codesign -d --verbose=2 "$APP_PATH" 2>&1 | grep -q "flags=.*runtime" \
+grep -q "flags=.*runtime" <<<"$SIGN_INFO" \
   || { echo "ERROR: falta hardened runtime, la notarización lo rechazaría"; exit 1; }
+grep -q "Developer ID Application" <<<"$SIGN_INFO" \
+  || { echo "ERROR: no está firmada con Developer ID"; exit 1; }
 
 # --- DMG -----------------------------------------------------------------
 info "Armando el DMG"
