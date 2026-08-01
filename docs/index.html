@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClaudeUsageBar — tu consumo de Claude Code en la menu bar</title>
+<meta name="description" content="App de macOS que muestra en la menu bar cuánto llevás consumido de tus límites de Claude Code. Lee el token que el CLI ya guardó, y nada más.">
+<meta property="og:title" content="ClaudeUsageBar">
+<meta property="og:description" content="Tu consumo de Claude Code, en la menu bar. Herramienta no oficial.">
+<style>
+:root{
+  /* Tomados literalmente de UsagePalette.swift, variante 5c "Naranja Claude". */
+  --surface:#1E1A17;
+  --surface-raised:#242019;
+  --ink:#F2EDE6;
+  --ink-dim:#9A9188;
+  --ink-faint:#6E6862;
+  --rule:rgba(242,237,230,.09);
+  --rule-soft:rgba(242,237,230,.055);
+
+  --normal:#EBA779;
+  --warning:#F0B65C;
+  --critical:#F07A66;
+  --fill-normal-a:#E8A05C;  --fill-normal-b:#D97757;
+  --fill-warning-a:#F0B65C; --fill-warning-b:#E07A3C;
+  --fill-critical-a:#E86B52;--fill-critical-b:#B8342A;
+  --track:rgba(235,167,121,.13);
+
+  --menubar-h:26px;
+
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,"JetBrains Mono",monospace;
+
+  --gutter:clamp(20px,5vw,64px);
+  --measure:74ch;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--surface);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:17px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  padding-top:var(--menubar-h);
+  overflow-x:hidden;
+}
+a{color:inherit}
+::selection{background:var(--fill-normal-b);color:#1E1A17}
+
+/* ───────────────────────── La menu bar ─────────────────────────
+   El elemento firma. La app vive en la menu bar, así que la página
+   también: la franja no se va nunca, y el porcentaje sigue latiendo
+   mientras leés. */
+.menubar{
+  position:fixed; inset:0 0 auto 0; z-index:100;
+  height:var(--menubar-h);
+  display:flex; align-items:center; gap:22px;
+  padding:0 12px;
+  background:rgba(20,17,15,.72);
+  backdrop-filter:saturate(180%) blur(20px);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid rgba(0,0,0,.5);
+  font-size:12.5px;
+  user-select:none;
+}
+.menubar__menus{display:flex; gap:18px; color:rgba(242,237,230,.62)}
+.menubar__menus b{color:var(--ink); font-weight:600}
+.menubar__spacer{flex:1}
+.menubar__tray{display:flex; align-items:center; gap:14px; color:rgba(242,237,230,.62)}
+
+/* El ítem de la app dentro de la bandeja. */
+.tray-item{
+  display:flex; align-items:center; gap:5px;
+  padding:2px 7px; margin:0 -3px;
+  border-radius:5px;
+  color:var(--ink);
+  text-decoration:none;
+  transition:background .18s ease;
+}
+.tray-item:hover,.tray-item:focus-visible{background:rgba(242,237,230,.13)}
+.tray-item__dot{width:7px;height:7px;border-radius:50%;background:var(--normal);transition:background .6s ease}
+.tray-item__pct{font-family:var(--mono); font-size:12px; font-variant-numeric:tabular-nums; letter-spacing:-.01em; transition:color .6s ease}
+.menubar__clock{font-variant-numeric:tabular-nums}
+
+@media (max-width:720px){
+  .menubar__menus{display:none}
+  .menubar__tray .hide-sm{display:none}
+}
+
+/* ───────────────────────── Tipografía ───────────────────────── */
+.eyebrow{
+  font-family:var(--mono);
+  font-size:11px;
+  letter-spacing:.22em;
+  text-transform:uppercase;
+  color:var(--ink-faint);
+  margin:0 0 20px;
+}
+h1{
+  font-size:clamp(40px,7.4vw,86px);
+  line-height:.98;
+  letter-spacing:-.035em;
+  font-weight:680;
+  margin:0 0 24px;
+  max-width:16ch;
+}
+h2{
+  font-size:clamp(26px,3.4vw,38px);
+  line-height:1.1;
+  letter-spacing:-.025em;
+  font-weight:640;
+  margin:0 0 14px;
+  max-width:22ch;
+}
+h3{font-size:17px; font-weight:620; letter-spacing:-.01em; margin:0 0 6px}
+p{margin:0 0 18px; max-width:var(--measure)}
+.lede{font-size:clamp(18px,2.1vw,21px); line-height:1.5; color:var(--ink-dim); max-width:52ch}
+.dim{color:var(--ink-dim)}
+code,kbd{font-family:var(--mono); font-size:.87em}
+
+section{padding:clamp(72px,10vw,132px) var(--gutter); border-top:1px solid var(--rule-soft)}
+.wrap{max-width:1080px; margin:0 auto}
+
+/* ───────────────────────── Hero ───────────────────────── */
+.hero{
+  border-top:0;
+  padding-top:clamp(56px,9vw,104px);
+  padding-bottom:clamp(64px,9vw,112px);
+  position:relative;
+}
+/* Un halo tenue bajo la bandeja: la luz cae desde donde vive la app. */
+.hero::before{
+  content:"";
+  position:absolute; top:calc(var(--menubar-h) * -1); right:6%;
+  width:min(620px,90vw); height:420px;
+  background:radial-gradient(ellipse at top,rgba(217,119,87,.16),transparent 68%);
+  pointer-events:none;
+}
+.hero__grid{
+  position:relative;
+  display:grid;
+  grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);
+  gap:clamp(32px,5vw,72px);
+  align-items:center;
+}
+@media (max-width:900px){.hero__grid{grid-template-columns:1fr; align-items:start}}
+
+.cta-row{display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-top:34px}
+.btn{
+  display:inline-flex; align-items:center; gap:9px;
+  padding:12px 20px;
+  border-radius:9px;
+  font-size:15px; font-weight:590;
+  text-decoration:none;
+  border:1px solid transparent;
+  transition:transform .16s ease, filter .16s ease, background .16s ease;
+}
+.btn--primary{
+  background:linear-gradient(100deg,var(--fill-normal-a),var(--fill-normal-b));
+  color:#221912;
+}
+.btn--primary:hover{filter:brightness(1.07); transform:translateY(-1px)}
+.btn--ghost{background:rgba(242,237,230,.07); color:var(--ink)}
+.btn--ghost:hover{background:rgba(242,237,230,.13)}
+.btn__meta{font-family:var(--mono); font-size:12px; opacity:.72; font-weight:500}
+.cta-note{font-size:13.5px; color:var(--ink-faint); margin:16px 0 0; max-width:46ch}
+
+/* ───────────── El popover: réplica del de la app ───────────── */
+.popover-mount{display:flex; flex-direction:column; align-items:center; gap:18px}
+.popover-note{
+  font-size:13px; line-height:1.55; color:var(--ink-faint);
+  max-width:312px; margin:0; text-align:left;
+}
+.popover-note b{color:var(--ink-dim); font-weight:500}
+.popover{
+  width:312px;                 /* UsageMetrics.popoverWidth */
+  max-width:100%;
+  background:rgba(30,26,23,.97);
+  border:1px solid rgba(242,237,230,.08);
+  border-radius:12px;
+  box-shadow:0 26px 60px -18px rgba(0,0,0,.75), 0 2px 6px rgba(0,0,0,.4);
+  overflow:hidden;
+}
+.popover__row{padding:13px 16px 14px; border-bottom:1px solid rgba(242,237,230,.05)}
+.popover__row:last-of-type{border-bottom:0}
+.popover__head{display:flex; align-items:baseline; justify-content:space-between; gap:8px}
+.popover__title{font-size:13px; font-weight:500}
+.popover__pct{font-family:var(--mono); font-size:13px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--normal); transition:color .6s ease}
+.bar{height:5px; border-radius:3px; background:var(--track); margin:7px 0; overflow:hidden}
+.bar__fill{
+  height:100%; border-radius:3px;
+  background:linear-gradient(90deg,var(--fill-normal-a),var(--fill-normal-b));
+  transition:width .9s cubic-bezier(.32,.72,.28,1), background .6s ease;
+}
+.popover__caption{display:flex; justify-content:space-between; gap:8px; font-size:11px; color:var(--ink-dim)}
+.popover__foot{display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border-top:1px solid rgba(242,237,230,.05)}
+.pill{
+  font-size:12.5px; font-weight:500;
+  padding:5px 11px; border-radius:7px;
+  background:rgba(242,237,230,.07); color:var(--ink);
+}
+.popover__stamp{font-size:11px; color:var(--ink-faint)}
+
+/* ───────────── Libro mayor de credenciales ───────────── */
+.ledger{margin-top:44px; border-top:1px solid var(--rule)}
+.ledger__row{
+  display:grid;
+  grid-template-columns:112px minmax(0,1fr) minmax(0,1.15fr);
+  gap:clamp(14px,3vw,40px);
+  padding:22px 0;
+  border-bottom:1px solid var(--rule);
+  align-items:baseline;
+}
+@media (max-width:760px){
+  .ledger__row{grid-template-columns:1fr; gap:8px; padding:20px 0}
+}
+.ledger__verb{
+  font-family:var(--mono);
+  font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--normal);
+}
+.ledger__verb--never{color:var(--ink-faint)}
+.ledger__what{font-size:16px; font-weight:560; letter-spacing:-.01em}
+.ledger__detail{font-size:14.5px; color:var(--ink-dim); line-height:1.55}
+.ledger__detail code{
+  color:var(--ink);
+  background:rgba(242,237,230,.06);
+  padding:1px 5px; border-radius:4px;
+  white-space:nowrap;
+}
+.scroll-x{overflow-x:auto}
+
+/* ───────────── Limitaciones ───────────── */
+.limits{display:grid; grid-template-columns:repeat(auto-fit,minmax(258px,1fr)); gap:1px; background:var(--rule); border:1px solid var(--rule); border-radius:10px; overflow:hidden; margin-top:40px}
+.limit{background:var(--surface); padding:24px 22px}
+.limit h3{color:var(--ink)}
+.limit p{font-size:14.5px; color:var(--ink-dim); margin:0; max-width:none}
+
+/* ───────────── Pasos de instalación ───────────── */
+.steps{margin-top:36px; counter-reset:step}
+.step{
+  display:grid; grid-template-columns:34px 1fr; gap:18px;
+  padding:20px 0; border-top:1px solid var(--rule-soft);
+}
+.step:first-child{border-top:0}
+.step__n{
+  font-family:var(--mono); font-size:12px; color:var(--ink-faint);
+  padding-top:3px; font-variant-numeric:tabular-nums;
+}
+.step p{margin:4px 0 0; font-size:15px; color:var(--ink-dim)}
+.req{display:flex; flex-wrap:wrap; gap:10px; margin:0 0 8px; padding:0; list-style:none}
+.req li{
+  font-family:var(--mono); font-size:12.5px;
+  padding:6px 11px; border:1px solid var(--rule); border-radius:6px; color:var(--ink-dim);
+}
+
+pre{
+  font-family:var(--mono); font-size:13px; line-height:1.7;
+  background:var(--surface-raised); border:1px solid var(--rule);
+  border-radius:9px; padding:16px 18px; overflow-x:auto; color:var(--ink-dim);
+  margin:0;
+}
+pre b{color:var(--normal); font-weight:400}
+
+footer{padding:56px var(--gutter) 72px; border-top:1px solid var(--rule-soft); color:var(--ink-faint); font-size:14px}
+footer a{color:var(--ink-dim)}
+footer a:hover{color:var(--ink)}
+.footer__grid{max-width:1080px; margin:0 auto; display:flex; flex-wrap:wrap; gap:12px 28px; align-items:baseline; justify-content:space-between}
+.disclaimer{max-width:1080px; margin:24px auto 0; font-size:13px; line-height:1.6}
+
+:focus-visible{outline:2px solid var(--normal); outline-offset:3px; border-radius:4px}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important; transition:none!important}
+}
+</style>
+</head>
+<body>
+
+<!-- La franja fija: el elemento firma de la página. -->
+<div class="menubar" role="presentation">
+  <div class="menubar__menus" aria-hidden="true">
+    <b>Terminal</b><span>Archivo</span><span>Edición</span><span>Ver</span><span>Ventana</span>
+  </div>
+  <div class="menubar__spacer"></div>
+  <div class="menubar__tray">
+    <a class="tray-item" href="#descargar">
+      <span class="tray-item__dot" id="trayDot"></span>
+      <span class="tray-item__pct" id="trayPct">6%</span>
+    </a>
+    <svg class="hide-sm" width="15" height="11" viewBox="0 0 15 11" fill="none" aria-hidden="true">
+      <path d="M1 3.4a9.4 9.4 0 0 1 13 0M3.5 6a5.9 5.9 0 0 1 8 0" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      <circle cx="7.5" cy="9" r="1.2" fill="currentColor"/>
+    </svg>
+    <span class="menubar__clock" id="clock">—</span>
+  </div>
+</div>
+
+<section class="hero">
+  <div class="wrap hero__grid">
+    <div>
+      <p class="eyebrow">macOS · menu bar · no oficial</p>
+      <h1>Cuánto te queda, sin abrir nada.</h1>
+      <p class="lede">
+        El porcentaje de tu ventana de 5 horas de Claude Code, siempre visible.
+        Abrís el popover y ves la semanal, los límites por modelo y cuánto falta
+        para cada reset.
+      </p>
+
+      <div class="cta-row" id="descargar">
+        <a class="btn btn--primary" href="https://github.com/macward/ClaudeUsageBar/releases/latest">
+          Descargar para macOS
+          <span class="btn__meta">1.1.4 · DMG</span>
+        </a>
+        <a class="btn btn--ghost" href="https://github.com/macward/ClaudeUsageBar">Ver el código</a>
+      </div>
+      <p class="cta-note">
+        Firmada con Developer ID y notarizada por Apple: abre sin advertencias de Gatekeeper.
+        Necesita macOS 14 o superior.
+      </p>
+    </div>
+
+    <!-- Réplica del popover, con las medidas y colores del código. -->
+    <div class="popover-mount">
+      <div class="popover" role="img" aria-label="Popover de la app mostrando el consumo de la ventana de 5 horas, la semanal y el límite semanal de Fable.">
+        <div class="popover__row">
+          <div class="popover__head">
+            <span class="popover__title">Últimas 5 horas</span>
+            <span class="popover__pct" id="popPct">6%</span>
+          </div>
+          <div class="bar"><div class="bar__fill" id="popFill" style="width:6%"></div></div>
+          <div class="popover__caption"><span id="popReset">Reinicia en 4h 12m</span><span>03:49</span></div>
+        </div>
+        <div class="popover__row">
+          <div class="popover__head">
+            <span class="popover__title">Semanal</span>
+            <span class="popover__pct">45%</span>
+          </div>
+          <div class="bar"><div class="bar__fill" style="width:45%"></div></div>
+          <div class="popover__caption"><span>Reinicia en 2d 23h</span><span>23:59</span></div>
+        </div>
+        <div class="popover__row">
+          <div class="popover__head">
+            <span class="popover__title">Semanal · Fable</span>
+            <span class="popover__pct">17%</span>
+          </div>
+          <div class="bar"><div class="bar__fill" style="width:17%"></div></div>
+          <div class="popover__caption"><span>Reinicia en 2d 23h</span><span>23:59</span></div>
+        </div>
+        <div class="popover__foot">
+          <span class="pill">Salir</span>
+          <span class="popover__stamp">Actualizado hace 1 min</span>
+        </div>
+      </div>
+      <p class="popover-note">
+        Arriba, en la barra, está el mismo número. <b>Pasa a ámbar en 70% y a rojo en 90%</b>, así
+        que no hace falta que lo mires: cuando cambia de color, ya te enteraste.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- La sección que de verdad importa. -->
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Qué toca de tu máquina</p>
+    <h2>Lee un token que ya está en tu llavero. Nada más.</h2>
+    <p class="lede">
+      La app no tiene login propio: reutiliza la sesión que el CLI <code>claude</code> ya abrió.
+      Eso significa tocar tu llavero, así que acá está el inventario completo, operación por operación.
+    </p>
+
+    <div class="ledger">
+      <div class="ledger__row">
+        <span class="ledger__verb">Lee</span>
+        <span class="ledger__what">El token OAuth del llavero</span>
+        <span class="ledger__detail scroll-x">
+          El item <code>Claude Code-credentials</code> que escribió el CLI. Solo lectura: nunca escribe
+          en el llavero ni crea items propios.
+        </span>
+      </div>
+      <div class="ledger__row">
+        <span class="ledger__verb">Envía</span>
+        <span class="ledger__what">Una petición, a un solo destino</span>
+        <span class="ledger__detail scroll-x">
+          <code>GET api.anthropic.com/api/oauth/usage</code>, contra los servidores de Anthropic y
+          nadie más. No hay analytics ni telemetría en el binario.
+        </span>
+      </div>
+      <div class="ledger__row">
+        <span class="ledger__verb">Guarda</span>
+        <span class="ledger__what">El último snapshot de porcentajes</span>
+        <span class="ledger__detail">
+          En <code>UserDefaults</code>, para tener algo que mostrar sin red. Ese snapshot no contiene
+          el token.
+        </span>
+      </div>
+      <div class="ledger__row">
+        <span class="ledger__verb ledger__verb--never">Nunca</span>
+        <span class="ledger__what">Lo loguea ni lo muestra</span>
+        <span class="ledger__detail">
+          El token es el único dato sensible que la app toca, y no aparece en ningún log ni en
+          pantalla.
+        </span>
+      </div>
+      <div class="ledger__row">
+        <span class="ledger__verb ledger__verb--never">Nunca</span>
+        <span class="ledger__what">Lo refresca</span>
+        <span class="ledger__detail">
+          Caduca cada ~8h y Claude Code lo renueva solo. Si esta app lo refrescara, rotaría el
+          refresh token y te rompería la sesión del CLI.
+        </span>
+      </div>
+    </div>
+
+    <p class="cta-note" style="margin-top:26px">
+      Si algo de esto no te cierra: <a href="https://github.com/macward/ClaudeUsageBar/tree/main/ClaudeUsageBar/ClaudeUsageBar/Features/Usage/Services">los dos servicios que hacen todo</a>
+      son cien líneas y se leen en cinco minutos.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Antes de instalar</p>
+    <h2>Lo que conviene saber de entrada.</h2>
+    <p class="lede">Cuatro límites reales. Mejor decirlos acá que dejar que los descubras.</p>
+
+    <div class="limits">
+      <div class="limit">
+        <h3>El endpoint no está documentado</h3>
+        <p>Es el que Claude Code usa internamente. Anthropic puede cambiarlo o retirarlo sin aviso, y
+        ese día la app deja de mostrar datos hasta que salga una versión nueva.</p>
+      </div>
+      <div class="limit">
+        <h3>El <code>User-Agent</code> va pinneado a mano</h3>
+        <p>A una versión concreta de Claude Code. Sin ese header el endpoint responde 429 durante
+        horas. Es el punto más frágil del diseño.</p>
+      </div>
+      <div class="limit">
+        <h3>El polling es conservador a propósito</h3>
+        <p>180 segundos de intervalo mínimo, y backoff de 3 a 15 minutos ante un 429. El número no
+        reacciona al instante, y es deliberado.</p>
+      </div>
+      <div class="limit">
+        <h3>Los porcentajes son del servidor</h3>
+        <p>Son una métrica ponderada, no <code>tokens / límite</code>, y la ventana cuenta el uso de
+        todos tus dispositivos, no solo de esta máquina.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Instalación</p>
+    <h2>Dos requisitos y tres pasos.</h2>
+
+    <ul class="req">
+      <li>macOS 14 (Sonoma) o superior</li>
+      <li>Claude Code instalado y con sesión iniciada</li>
+    </ul>
+    <p class="dim" style="font-size:15px">
+      El segundo no es opcional: la app no tiene login propio y no sirve de nada sin Claude Code
+      configurado en la misma máquina.
+    </p>
+
+    <div class="steps">
+      <div class="step">
+        <span class="step__n">01</span>
+        <div>
+          <h3>Bajá el DMG y arrastrá la app a Aplicaciones</h3>
+          <p>Está firmada y notarizada, así que abre sin vueltas.</p>
+        </div>
+      </div>
+      <div class="step">
+        <span class="step__n">02</span>
+        <div>
+          <h3>Aceptá el onboarding</h3>
+          <p>Explica qué se lee y para qué. Hasta que aceptes, la app no toca ni el llavero ni la red.</p>
+        </div>
+      </div>
+      <div class="step">
+        <span class="step__n">03</span>
+        <div>
+          <h3>Dale «Permitir siempre» al diálogo del llavero</h3>
+          <p>Es macOS preguntando, no la app. Con «Permitir siempre» deja de preguntar en cada arranque.</p>
+        </div>
+      </div>
+    </div>
+
+    <p class="eyebrow" style="margin:52px 0 14px">O compilala vos</p>
+    <pre><b>xcodebuild</b> -project ClaudeUsageBar/ClaudeUsageBar.xcodeproj \
+  -scheme ClaudeUsageBar -destination 'platform=macOS' build</pre>
+  </div>
+</section>
+
+<footer>
+  <div class="footer__grid">
+    <span>MIT · <a href="https://github.com/macward/ClaudeUsageBar">github.com/macward/ClaudeUsageBar</a></span>
+    <span><a href="https://github.com/macward/ClaudeUsageBar/releases">Todas las versiones</a></span>
+  </div>
+  <p class="disclaimer">
+    Herramienta no oficial, sin afiliación con Anthropic. Hecha para uso personal y publicada por si
+    a alguien más le sirve. Claude y Claude Code son marcas de Anthropic.
+  </p>
+</footer>
+
+<script>
+(function(){
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Reloj de la menu bar, con el formato de macOS.
+  var clock = document.getElementById('clock');
+  function tickClock(){
+    var d = new Date();
+    var dias = ['dom','lun','mar','mié','jue','vie','sáb'];
+    clock.textContent = dias[d.getDay()] + ' ' +
+      d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0');
+  }
+  tickClock();
+  setInterval(tickClock, 20000);
+
+  // El ítem de la bandeja y el popover se mueven juntos: es el mismo dato.
+  // Los umbrales son los del código — <70 normal, 70–89 warning, >=90 critical.
+  var trayPct = document.getElementById('trayPct');
+  var trayDot = document.getElementById('trayDot');
+  var popPct  = document.getElementById('popPct');
+  var popFill = document.getElementById('popFill');
+  var popReset= document.getElementById('popReset');
+
+  var pasos = [
+    {p:6,  reset:'Reinicia en 4h 12m'},
+    {p:28, reset:'Reinicia en 3h 04m'},
+    {p:54, reset:'Reinicia en 2h 21m'},
+    {p:76, reset:'Reinicia en 1h 38m'},
+    {p:93, reset:'Reinicia en 42m'}
+  ];
+  var i = 0;
+
+  function severidad(p){
+    if (p >= 90) return {color:'var(--critical)', a:'var(--fill-critical-a)', b:'var(--fill-critical-b)'};
+    if (p >= 70) return {color:'var(--warning)',  a:'var(--fill-warning-a)',  b:'var(--fill-warning-b)'};
+    return               {color:'var(--normal)',   a:'var(--fill-normal-a)',   b:'var(--fill-normal-b)'};
+  }
+
+  function pintar(paso){
+    var s = severidad(paso.p);
+    trayPct.textContent = paso.p + '%';
+    popPct.textContent  = paso.p + '%';
+    trayPct.style.color = s.color;
+    trayDot.style.background = s.color;
+    popPct.style.color  = s.color;
+    popFill.style.width = paso.p + '%';
+    popFill.style.background = 'linear-gradient(90deg,' + s.a + ',' + s.b + ')';
+    popReset.textContent = paso.reset;
+  }
+
+  pintar(pasos[0]);
+
+  if (!reduce) {
+    setInterval(function(){
+      i = (i + 1) % pasos.length;
+      pintar(pasos[i]);
+    }, 2600);
+  }
+})();
+</script>
+</body>
+</html>
