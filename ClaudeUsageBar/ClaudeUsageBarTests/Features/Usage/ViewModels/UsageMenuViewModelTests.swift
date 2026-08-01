@@ -905,6 +905,113 @@ struct UsageMenuViewModelTests {
 
     // MARK: - Private Helpers
 
+    /// Reproduces the payload observed on 2026-07-31 with an idle session window: the server sends
+    /// `five_hour` as `{"utilization": 0}` with no `resets_at` — there is no open window, so there
+    /// is nothing to reset. Requiring the date used to drop the row entirely.
+    @Test("An idle session window with no reset time still gets its row")
+    func idleSessionWindowWithoutResetIsStillShown() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 0, resetsAt: nil),
+            sevenDay: UsageSnapshot.Window(utilization: 45, resetsAt: Date().addingTimeInterval(86_400)),
+            limits: nil
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.fiveHour?.percentUsed == 0)
+        #expect(detail.fiveHour?.resetsAt == nil)
+    }
+
+    /// The label must keep leading with the session window even when that window is idle. Dropping
+    /// the row also dropped it from the fallback chain, so the menu bar silently switched to the
+    /// weekly percentage — 45% where the session read 0%.
+    @Test("An idle session window still wins the menu bar over the weekly one")
+    func idleSessionWindowStaysDominant() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 0, resetsAt: nil),
+            sevenDay: UsageSnapshot.Window(utilization: 45, resetsAt: Date().addingTimeInterval(86_400)),
+            limits: nil
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.dominant.windowKind == "five_hour")
+        #expect(detail.dominant.percentUsed == 0)
+    }
+
+    /// An idle session arrives twice — as `five_hour` and as a `session` entry in `limits[]` — and
+    /// both copies lack `resets_at`. Now that a missing date no longer discards a row, the
+    /// duplicate check has to treat two dateless restatements of the same scope as one, or the
+    /// popover paints 0% twice.
+    @Test("A dateless session limit does not duplicate the dateless session window")
+    func datelessSessionLimitIsDeduplicated() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let weeklyReset: Date = Date().addingTimeInterval(86_400)
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 0, resetsAt: nil),
+            sevenDay: UsageSnapshot.Window(utilization: 45, resetsAt: weeklyReset),
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "session", group: "session", percent: 0, severity: "normal",
+                    resetsAt: nil, isActive: false
+                ),
+                UsageSnapshot.Limit(
+                    kind: "weekly_all", group: "weekly", percent: 45, severity: "normal",
+                    resetsAt: weeklyReset, isActive: true
+                ),
+                UsageSnapshot.Limit(
+                    kind: "weekly_scoped", group: "weekly", percent: 17, severity: "normal",
+                    resetsAt: weeklyReset.addingTimeInterval(-1), isActive: false,
+                    scope: UsageSnapshot.Scope(model: UsageSnapshot.Scope.Model(id: nil, displayName: "Fable"))
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.count == 1)
+        #expect(detail.limits.first?.title == "Semanal · Fable")
+    }
+
+    /// One date present and the other absent is not enough to call two rows the same window — with
+    /// nothing to compare, an extra row is the cheaper mistake than a vanished one.
+    @Test("A dateless limit is not deduplicated against a window that has a date")
+    func datelessLimitIsNotDeduplicatedAgainstDatedWindow() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let snapshot: UsageSnapshot = UsageSnapshot(
+            fiveHour: UsageSnapshot.Window(utilization: 22, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: nil,
+            limits: [
+                UsageSnapshot.Limit(
+                    kind: "session", group: "session", percent: 22, severity: "normal",
+                    resetsAt: nil, isActive: false
+                )
+            ]
+        )
+        let viewModel: UsageMenuViewModel = Self.makeViewModel(snapshot: snapshot, defaults: defaults)
+
+        await viewModel.refresh()
+
+        guard case .fresh(let detail) = viewModel.state else {
+            Issue.record("expected .fresh, got \(viewModel.state)"); return
+        }
+        #expect(detail.limits.count == 1)
+    }
+
     private static func freshDefaults() -> UserDefaults {
         let suiteName: String = "com.maxward.ClaudeUsageBarTests.\(UUID().uuidString)"
         let defaults: UserDefaults = UserDefaults(suiteName: suiteName)!

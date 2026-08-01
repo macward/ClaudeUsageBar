@@ -35,18 +35,28 @@ internal struct UsageWindowRowView: View {
                 palette: palette
             )
 
-            // The countdown ticks once a minute via TimelineView, never on every second —
-            // this view holds no Timer of its own. The tick's own date drives the formatter, so
-            // the text is a pure function of the timeline context rather than of a `Date()` read
-            // hidden inside the body.
-            TimelineView(.periodic(from: .now, by: 60)) { context in
-                HStack {
-                    Text("Reinicia en \(RemainingTimeFormatter.duration(until: display.resetsAt, now: context.date))")
-                    Spacer(minLength: 8)
-                    Text(display.resetsAt, format: .dateTime.hour().minute())
+            // With no reset time the countdown has nothing to count, so the row says why instead of
+            // rendering an empty or invented one. It keeps the same caption slot, so a row that
+            // gains or loses its date doesn't change height.
+            if let resetsAt = display.resetsAt {
+                // The countdown ticks once a minute via TimelineView, never on every second —
+                // this view holds no Timer of its own. The tick's own date drives the formatter, so
+                // the text is a pure function of the timeline context rather than of a `Date()` read
+                // hidden inside the body.
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    HStack {
+                        Text("Reinicia en \(RemainingTimeFormatter.duration(until: resetsAt, now: context.date))")
+                        Spacer(minLength: 8)
+                        Text(resetsAt, format: .dateTime.hour().minute())
+                    }
+                    .font(UsageMetrics.captionFont)
+                    .foregroundStyle(palette.secondaryText)
                 }
-                .font(UsageMetrics.captionFont)
-                .foregroundStyle(palette.secondaryText)
+            } else {
+                Text("Sin ventana activa")
+                    .font(UsageMetrics.captionFont)
+                    .foregroundStyle(palette.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.horizontal, UsageMetrics.rowHorizontalPadding)

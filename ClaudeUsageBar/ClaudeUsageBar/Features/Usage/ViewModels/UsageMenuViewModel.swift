@@ -349,8 +349,28 @@ internal final class UsageMenuViewModel {
     private static func isDuplicate(_ limit: UsageDisplayState, of namedWindows: [UsageDisplayState]) -> Bool {
         guard let alias = scopeAlias(for: limit.windowKind) else { return false }
         return namedWindows.contains { window in
-            window.windowKind == alias
-                && abs(window.resetsAt.timeIntervalSince(limit.resetsAt)) < duplicateResetTolerance
+            window.windowKind == alias && resetsMatch(window.resetsAt, limit.resetsAt)
+        }
+    }
+
+    /// Whether two rows reset at the same instant, with both-absent counting as a match.
+    ///
+    /// That case is not hypothetical: an idle session window arrives as `five_hour` with no
+    /// `resets_at` *and* as a `session` entry in `limits[]` with no `resets_at` either. Now that a
+    /// missing date no longer discards a row, treating two dateless restatements of the same scope
+    /// as distinct would paint the same 0% twice.
+    ///
+    /// One date present and the other absent stays a non-match: with nothing to compare, the scope
+    /// alias alone isn't enough to call them the same window, and showing an extra row is the
+    /// cheaper mistake.
+    private static func resetsMatch(_ lhs: Date?, _ rhs: Date?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            return true
+        case (let lhs?, let rhs?):
+            return abs(lhs.timeIntervalSince(rhs)) < duplicateResetTolerance
+        default:
+            return false
         }
     }
 
@@ -475,25 +495,30 @@ internal final class UsageMenuViewModel {
     }
 
     private static func limitDisplayState(_ limit: UsageSnapshot.Limit) -> UsageDisplayState? {
-        guard let percent = limit.percent, let resetsAt = limit.resetsAt else { return nil }
+        // Only the percentage is required. A limit with no `resets_at` is a limit nobody is
+        // currently consuming, not a limit that shouldn't be shown.
+        guard let percent = limit.percent else { return nil }
         let kind: String = limit.kind ?? "limit"
         return UsageDisplayState(
             percentUsed: Int(percent.rounded()),
             severity: severity(forPercent: percent),
             windowKind: kind,
             title: title(for: limit, kind: kind),
-            resetsAt: resetsAt
+            resetsAt: limit.resetsAt
         )
     }
 
     private static func windowDisplayState(kind: String, window: UsageSnapshot.Window?) -> UsageDisplayState? {
-        guard let window, let percent = window.utilization, let resetsAt = window.resetsAt else { return nil }
+        // `resets_at` is deliberately not required. The endpoint drops it for a window with no
+        // usage in it — there is nothing to reset — and demanding it here is what made the session
+        // row disappear at exactly the moment it read 0%.
+        guard let window, let percent = window.utilization else { return nil }
         return UsageDisplayState(
             percentUsed: Int(percent.rounded()),
             severity: severity(forPercent: percent),
             windowKind: kind,
             title: title(forKind: kind),
-            resetsAt: resetsAt
+            resetsAt: window.resetsAt
         )
     }
 

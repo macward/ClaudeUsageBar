@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-07-31
+
+### Fixed
+
+- La fila «Últimas 5 horas» desaparecía del popover cuando la ventana de sesión quedaba vacía, y
+  con ella el porcentaje de la menu bar pasaba a mostrar el semanal. El endpoint manda esa ventana
+  como `{"utilization": 0}` **sin** `resets_at` —no hay ventana abierta, así que no hay nada que
+  reiniciar— y la app exigía la fecha para construir la fila. Ahora sólo exige el porcentaje: la
+  fila se muestra igual y, en lugar de la cuenta regresiva, dice «Sin ventana activa». La
+  deduplicación entiende el caso nuevo: dos filas del mismo ámbito sin fecha son la misma, pero una
+  con fecha y otra sin ella no se asumen iguales.
+
 ## [1.1.3] - 2026-07-31
 
 ### Fixed
