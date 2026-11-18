@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- La app pedía la contraseña del llavero sola, varias veces al día. Claude Code reescribe su item
+  cada vez que renueva su token o alguno de sus tokens OAuth de MCP, y cada reescritura borra el
+  «Permitir siempre». Ahora las lecturas automáticas nunca abren el diálogo: si hace falta volver a
+  autorizar, el popover lo dice y el diálogo aparece sólo al tocar «Autorizar».
+- El token en memoria se releía cinco minutos antes de vencer. Como el CLI sólo lo renueva cuando
+  lo necesita, esa lectura solía devolver el mismo token y costaba un prompt extra por renovación.
+  Ahora se usa hasta su vencimiento real.
+
 ## [1.1.4] - 2026-07-31
 
 ### Fixed

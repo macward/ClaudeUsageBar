@@ -72,7 +72,11 @@ nonisolated extension ClaudeCodeCredentials: CustomStringConvertible, CustomDebu
 /// Reads the OAuth token Claude Code's CLI already stored in the Keychain. Read-only: this
 /// service never writes, refreshes, or rotates the item — that's the CLI's job alone.
 internal nonisolated protocol ClaudeCodeCredentialsServiceProtocol: Sendable {
-    func readCredentials() async throws -> ClaudeCodeCredentials
+    /// - Parameter allowingUserInteraction: whether macOS may show its SecurityAgent dialog to
+    ///   authorize the read. With `false`, a read the user would have to approve fails at once with
+    ///   ``ClaudeCodeCredentialsError/interactionNotAllowed`` instead of opening the dialog. Only a
+    ///   read the user explicitly asked for (onboarding, "Autorizar") may pass `true`.
+    func readCredentials(allowingUserInteraction: Bool) async throws -> ClaudeCodeCredentials
 }
 
 internal nonisolated struct ClaudeCodeCredentialsService: ClaudeCodeCredentialsServiceProtocol {
@@ -81,23 +85,34 @@ internal nonisolated struct ClaudeCodeCredentialsService: ClaudeCodeCredentialsS
 
     internal init() {}
 
-    /// `SecItemCopyMatching` blocks until the user answers the SecurityAgent prompt on first
-    /// access, so this always runs off the caller's actor via `Task.detached`.
-    internal func readCredentials() async throws -> ClaudeCodeCredentials {
+    /// `SecItemCopyMatching` blocks until the user answers the SecurityAgent prompt, so this
+    /// always runs off the caller's actor via `Task.detached`.
+    internal func readCredentials(allowingUserInteraction: Bool) async throws -> ClaudeCodeCredentials {
         try await Task.detached(priority: .userInitiated) {
-            try Self.readCredentialsBlocking()
+            try Self.readCredentialsBlocking(allowingUserInteraction: allowingUserInteraction)
         }.value
     }
 
     // MARK: - Private Methods
 
-    private static func readCredentialsBlocking() throws -> ClaudeCodeCredentials {
-        let query: [String: Any] = [
+    private static func readCredentialsBlocking(allowingUserInteraction: Bool) throws -> ClaudeCodeCredentials {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
+        if !allowingUserInteraction {
+            // The CLI rewrites its item several times a day, and every rewrite drops the grant the
+            // user gave this app, so an automatic read regularly needs approval again. Failing
+            // instead of prompting turns that into an "Autorizar" button the user presses when they
+            // choose, rather than a password dialog popping up out of nowhere.
+            //
+            // `kSecUseAuthenticationUI` is deprecated in favour of an `LAContext`, but that only
+            // governs data-protection items. This one lives in the file-based login keychain, whose
+            // ACL prompt only this key controls.
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        }
 
         var item: CFTypeRef?
         let status: OSStatus = SecItemCopyMatching(query as CFDictionary, &item)

@@ -820,6 +820,57 @@ struct UsageMenuViewModelTests {
         #expect(viewModel.state == .error(.repository(.credentialsUnavailable(.itemNotFound))))
     }
 
+    @Test("The read right after the user completes onboarding may open the system dialog")
+    func onboardingReadIsInteractive() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let credentialsService: SequencedCredentialsService = SequencedCredentialsService(
+            results: [.success(Self.validCredentials())]
+        )
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: credentialsService,
+            apiService: SequencedUsageAPIService(results: [.success(Self.sampleSnapshot(percent: 5))]),
+            userDefaults: defaults
+        )
+        let viewModel: UsageMenuViewModel = UsageMenuViewModel(
+            repository: repository,
+            isPollingEnabled: false,
+            userDefaults: defaults
+        )
+
+        viewModel.completeOnboarding()
+        await viewModel.refresh()
+
+        // The user just pressed "Autorizar" expecting the dialog; failing silently there would
+        // only make them press a second button for the same thing.
+        #expect(credentialsService.interactionFlags == [true])
+    }
+
+    @Test("Refreshes on a later launch read the Keychain without opening the system dialog")
+    func laterLaunchReadIsNotInteractive() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        defaults.set(true, forKey: "com.maxward.ClaudeUsageBar.hasCompletedOnboarding")
+        let credentialsService: SequencedCredentialsService = SequencedCredentialsService(
+            results: [.failure(.interactionNotAllowed)]
+        )
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: credentialsService,
+            apiService: SequencedUsageAPIService(results: [.success(Self.sampleSnapshot(percent: 5))]),
+            userDefaults: defaults
+        )
+        let viewModel: UsageMenuViewModel = UsageMenuViewModel(
+            repository: repository,
+            isPollingEnabled: false,
+            userDefaults: defaults
+        )
+
+        await viewModel.refresh()
+
+        #expect(credentialsService.interactionFlags == [false])
+        // Needing approval stops the loop and waits for the user, same as an explicit denial.
+        #expect(viewModel.isAwaitingAuthorizationRetry == true)
+        #expect(viewModel.state == .error(.repository(.credentialsUnavailable(.interactionNotAllowed))))
+    }
+
     @Test("retryAuthorization() re-reads the Keychain once and recovers when access is granted")
     func retryAuthorizationRecoversAfterGrant() async throws {
         let defaults: UserDefaults = Self.freshDefaults()

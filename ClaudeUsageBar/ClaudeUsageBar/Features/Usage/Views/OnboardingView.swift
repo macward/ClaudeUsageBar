@@ -62,20 +62,23 @@ internal struct AuthorizationDeniedView: View {
     // MARK: - Properties
 
     internal let palette: UsagePalette
+
+    /// `true` when nobody said no: an automatic read needed approval and was not allowed to ask
+    /// for it, which is what happens after Claude Code rewrites its credentials. `false` when the
+    /// user actually denied (or cancelled) the dialog. The two need different wording — telling
+    /// someone they denied access when they never saw a dialog is just confusing.
+    internal let needsApprovalOnly: Bool
     internal let onRetry: () -> Void
 
     // MARK: - Body
 
     internal var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Sin acceso a la sesión de Claude Code", systemImage: "lock.slash")
+            Label(title, systemImage: needsApprovalOnly ? "key" : "lock.slash")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(palette.percentColor(for: .critical))
+                .foregroundStyle(palette.percentColor(for: needsApprovalOnly ? .warning : .critical))
 
-            Text("""
-                No se pudo leer tu sesión porque el acceso fue denegado. Podés volver a \
-                intentarlo cuando quieras: macOS te va a preguntar de nuevo.
-                """)
+            Text(message)
                 .foregroundStyle(palette.title)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -84,11 +87,30 @@ internal struct AuthorizationDeniedView: View {
                 .foregroundStyle(palette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button("Reintentar") {
+            Button(needsApprovalOnly ? "Autorizar" : "Reintentar") {
                 onRetry()
             }
             .accessibilityIdentifier("onboarding.retry")
         }
         .accessibilityIdentifier("onboarding.denied")
+    }
+
+    // MARK: - Private Properties
+
+    private var title: String {
+        needsApprovalOnly ? "Hace falta autorizar de nuevo" : "Sin acceso a la sesión de Claude Code"
+    }
+
+    private var message: String {
+        if needsApprovalOnly {
+            return """
+                Claude Code renovó sus credenciales y macOS necesita que vuelvas a autorizar la \
+                lectura. La app no te lo pregunta sola: tocá Autorizar cuando quieras.
+                """
+        }
+        return """
+            No se pudo leer tu sesión porque el acceso fue denegado. Podés volver a \
+            intentarlo cuando quieras: macOS te va a preguntar de nuevo.
+            """
     }
 }
