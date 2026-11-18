@@ -410,8 +410,8 @@ struct UsageRepositoryTests {
         #expect(credentialsService.callCount == 1)
     }
 
-    @Test("A token within five minutes of expiry is re-read rather than reused")
-    func tokenNearExpiryIsReRead() async throws {
+    @Test("A token is reused right up to its expiry, and only re-read once it has passed")
+    func tokenReusedUntilActualExpiry() async throws {
         let defaults: UserDefaults = Self.freshDefaults()
         let credentialsService: SequencedCredentialsService = SequencedCredentialsService(results: [
             .success(ClaudeCodeCredentials(
@@ -429,11 +429,48 @@ struct UsageRepositoryTests {
         )
 
         _ = await repository.refresh(now: Self.referenceDate)
-        // 200s later the cached token has 200s of life left — inside the 300s margin, so it must
-        // be swapped before the API starts answering 401 rather than after.
+        // 200s of life left. A five-minute margin used to re-read here, and since the CLI only
+        // rotates on demand that read mostly returned the same token — a prompt for nothing.
         _ = await repository.refresh(now: Self.referenceDate.addingTimeInterval(200))
+        #expect(credentialsService.callCount == 1)
 
+        _ = await repository.refresh(now: Self.referenceDate.addingTimeInterval(400))
         #expect(credentialsService.callCount == 2)
+    }
+
+    @Test("Automatic refreshes never let a Keychain read open the system dialog")
+    func automaticRefreshReadsWithoutInteraction() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let credentialsService: SequencedCredentialsService = SequencedCredentialsService(results: [
+            .success(Self.validCredentials(token: "sk-ant-oat01-old")),
+            .success(Self.validCredentials(token: "sk-ant-oat01-new"))
+        ])
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: credentialsService,
+            apiService: SequencedUsageAPIService(results: [.failure(.unauthorized), .success(Self.sampleSnapshot())]),
+            userDefaults: defaults
+        )
+
+        // Covers both reads a refresh can make: the first one and the re-read after a 401.
+        _ = await repository.refresh(now: Self.referenceDate)
+
+        #expect(credentialsService.interactionFlags == [false, false])
+    }
+
+    @Test("A read that needs approval surfaces as interactionNotAllowed instead of prompting")
+    func readNeedingApprovalSurfacesAsInteractionNotAllowed() async throws {
+        let defaults: UserDefaults = Self.freshDefaults()
+        let apiService: SequencedUsageAPIService = SequencedUsageAPIService(results: [.success(Self.sampleSnapshot())])
+        let repository: UsageRepository = UsageRepository(
+            credentialsService: SequencedCredentialsService(results: [.failure(.interactionNotAllowed)]),
+            apiService: apiService,
+            userDefaults: defaults
+        )
+
+        let result: UsageRepositoryResult = await repository.refresh(now: Self.referenceDate)
+
+        #expect(result == .failure(.credentialsUnavailable(.interactionNotAllowed)))
+        #expect(apiService.callCount == 0)
     }
 
     @Test("The authorization retry always re-reads the Keychain, never the in-memory token")
@@ -456,6 +493,8 @@ struct UsageRepositoryTests {
         _ = await repository.retryIgnoringThrottle(now: Self.referenceDate.addingTimeInterval(1))
 
         #expect(credentialsService.callCount == 2)
+        // The retry is the user pressing a button, so it — and only it — may open the dialog.
+        #expect(credentialsService.interactionFlags == [false, true])
     }
 
     @Test("A 401 re-reads the Keychain even with a token still cached in memory")

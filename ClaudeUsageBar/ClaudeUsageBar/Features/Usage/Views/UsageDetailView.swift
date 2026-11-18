@@ -78,9 +78,11 @@ internal struct UsageDetailView: View {
             // dedicated view with an explicit retry instead of the generic error line.
             message {
                 if viewModel.isAwaitingAuthorizationRetry {
-                    AuthorizationDeniedView(palette: palette) {
-                        Task { await viewModel.retryAuthorization() }
-                    }
+                    AuthorizationDeniedView(
+                        palette: palette,
+                        needsApprovalOnly: error == .repository(.credentialsUnavailable(.interactionNotAllowed)),
+                        onRetry: { Task { await viewModel.retryAuthorization() } }
+                    )
                 } else {
                     Label(Self.errorText(error), systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(palette.percentColor(for: .critical))

@@ -48,7 +48,8 @@ Implicaciones de diseño:
 
 - **Polling caro y frágil**: TTL de 180s, backoff exponencial 3→6→12→15min cap en 429. Nunca poll agresivo.
 - **Nunca refrescar el token**: el `accessToken` caduca cada ~8h y Claude Code lo renueva solo. Si la app refrescara, rotaría el refresh token y rompería el login del usuario.
-- **Leer el Keychain lo menos posible, y sólo en memoria.** Cada lectura es un prompt potencial de SecurityAgent (ver "Known Issues"), así que `UsageRepository` conserva las credenciales en memoria hasta 5 min antes de `expiresAt` en vez de releer en cada fetch. El token **nunca** se persiste. La rotación se detecta releyendo: al vencer esa copia, ante un 401, y en el «Reintentar» tras una denegación.
+- **Leer el Keychain lo menos posible, y sólo en memoria.** Cada lectura es un prompt potencial de SecurityAgent (ver "Known Issues"), así que `UsageRepository` conserva las credenciales en memoria hasta que pasa `expiresAt` (sin margen: releer antes devolvía el mismo token y costaba un prompt de más) en vez de releer en cada fetch. El token **nunca** se persiste. La rotación se detecta releyendo: al vencer esa copia, ante un 401, y en el «Reintentar» tras una denegación.
+- **Las lecturas automáticas nunca abren el diálogo.** Polling, wake y popover leen con `kSecUseAuthenticationUIFail`: si el item necesita aprobación, fallan con `interactionNotAllowed` y el popover muestra «Autorizar». Sólo la lectura posterior al onboarding y el «Autorizar»/«Reintentar» pasan `allowingUserInteraction: true`.
 - **Nunca loguear ni renderizar el token.** El único campo sensible que la app toca.
 - El parseo de `.jsonl`, si se implementa, debe ser **incremental y tolerante a fallos**: crecen mientras se leen, tienen líneas parciales al final y tipos de evento desconocidos. Nunca fallar todo el parseo por una línea inválida.
 

@@ -65,11 +65,6 @@ internal final class UsageRepository {
     /// still noticing a fresh `claude` login promptly.
     private static let sessionExpiredRetryInterval: TimeInterval = 900
 
-    /// How long before `expiresAt` the in-memory credentials are considered used up and the
-    /// Keychain is read again. Five minutes is enough to swap the token before the API starts
-    /// answering 401, without shortening its useful life in any way that matters.
-    private static let credentialsRefreshMargin: TimeInterval = 300
-
     private static let cacheKey: String = "com.maxward.ClaudeUsageBar.cachedUsageSnapshot"
 
     private static let logger: Logger = Logger(subsystem: "com.maxward.ClaudeUsageBar", category: "UsageRepository")
@@ -95,8 +90,13 @@ internal final class UsageRepository {
     /// each of those rewrites into a prompt within 180s, several times a day. Holding the token
     /// until it is about to expire collapses every rewrite in between into a single prompt.
     ///
+    /// It is reused until `expiresAt` actually passes, not until some margin before it. A margin
+    /// used to exist (five minutes), and it cost a prompt per rotation: the CLI only rotates the
+    /// token when it needs it, so reading early mostly returned the *same* token — still inside the
+    /// margin, so the next poll read again — and then the rotation itself forced one more read.
+    ///
     /// The app still never *refreshes* the token: rotation is picked up by re-reading, either when
-    /// this copy ages out or when the API answers 401.
+    /// this copy expires or when the API answers 401.
     private var cachedCredentials: ClaudeCodeCredentials?
 
     /// The earliest instant a subsequent `refresh()` is allowed to touch the network. A call
@@ -115,7 +115,11 @@ internal final class UsageRepository {
 
     // MARK: - Public Methods
 
-    internal func refresh(now: Date = Date()) async -> UsageRepositoryResult {
+    /// - Parameter allowingUserInteraction: whether a Keychain read made by this call may open the
+    ///   system dialog. Every automatic trigger (polling, wake, popover) leaves it `false`: a read
+    ///   that needs approval then comes back as `.credentialsUnavailable(.interactionNotAllowed)`
+    ///   and the user decides when to authorize. Only an explicit user action passes `true`.
+    internal func refresh(now: Date = Date(), allowingUserInteraction: Bool = false) async -> UsageRepositoryResult {
         guard now >= nextAllowedFetch else {
             return .throttled(until: nextAllowedFetch)
         }
@@ -133,7 +137,7 @@ internal final class UsageRepository {
         // once per second, indefinitely.
         let credentials: ClaudeCodeCredentials
         do {
-            credentials = try await currentCredentials(now: now)
+            credentials = try await currentCredentials(now: now, allowingUserInteraction: allowingUserInteraction)
         } catch let credentialsError as ClaudeCodeCredentialsError {
             recordAttempt(now: now)
             return .failure(.credentialsUnavailable(credentialsError))
@@ -156,11 +160,16 @@ internal final class UsageRepository {
             return .sessionExpired
         }
 
-        return await performFetch(accessToken: credentials.accessToken, allowRetry: true, now: now)
+        return await performFetch(
+            accessToken: credentials.accessToken,
+            allowRetry: true,
+            allowingUserInteraction: allowingUserInteraction,
+            now: now
+        )
     }
 
     /// The user's explicit retry after the Keychain denied access — the one call allowed to ignore
-    /// the fetch interval.
+    /// the fetch interval, and one of the only two allowed to open the system dialog.
     ///
     /// Exempting it is safe precisely because it cannot be reached autonomously: on an
     /// authorization failure the ViewModel stops the polling loop and drops the wake observer, so
@@ -174,35 +183,48 @@ internal final class UsageRepository {
         // The in-memory copy goes too: this path only runs after the Keychain refused, so there is
         // nothing cached worth trusting, and the whole point of the retry is to ask again.
         cachedCredentials = nil
-        return await refresh(now: now)
+        return await refresh(now: now, allowingUserInteraction: true)
     }
 
     // MARK: - Private Methods
 
     /// The token to fetch with, from memory when it still has useful life left and from the
     /// Keychain otherwise. See ``cachedCredentials`` for why this is not simply a read every time.
-    private func currentCredentials(now: Date) async throws -> ClaudeCodeCredentials {
-        if let cachedCredentials, cachedCredentials.expiresAt > now.addingTimeInterval(Self.credentialsRefreshMargin) {
+    private func currentCredentials(now: Date, allowingUserInteraction: Bool) async throws -> ClaudeCodeCredentials {
+        if let cachedCredentials, cachedCredentials.expiresAt > now {
             return cachedCredentials
         }
-        return try await readFreshCredentials()
+        return try await readFreshCredentials(allowingUserInteraction: allowingUserInteraction)
     }
 
     /// Reads the Keychain unconditionally, bypassing (and replacing) the in-memory copy. Every
     /// call here is a potential SecurityAgent prompt — keep the call sites countable.
-    private func readFreshCredentials() async throws -> ClaudeCodeCredentials {
-        let credentials: ClaudeCodeCredentials = try await credentialsService.readCredentials()
+    private func readFreshCredentials(allowingUserInteraction: Bool) async throws -> ClaudeCodeCredentials {
+        let credentials: ClaudeCodeCredentials = try await credentialsService.readCredentials(
+            allowingUserInteraction: allowingUserInteraction
+        )
         cachedCredentials = credentials
         return credentials
     }
 
-    private func performFetch(accessToken: String, allowRetry: Bool, now: Date) async -> UsageRepositoryResult {
+    private func performFetch(
+        accessToken: String,
+        allowRetry: Bool,
+        allowingUserInteraction: Bool,
+        now: Date
+    ) async -> UsageRepositoryResult {
         do {
             let snapshot: UsageSnapshot = try await apiService.fetchUsage(accessToken: accessToken)
             recordSuccess(snapshot: snapshot, now: now)
             return .fresh(snapshot)
         } catch let error as UsageAPIServiceError {
-            return await handle(error, accessToken: accessToken, allowRetry: allowRetry, now: now)
+            return await handle(
+                error,
+                accessToken: accessToken,
+                allowRetry: allowRetry,
+                allowingUserInteraction: allowingUserInteraction,
+                now: now
+            )
         } catch {
             recordAttempt(now: now)
             return cachedResult(now: now) ?? .failure(.networkError)
@@ -213,6 +235,7 @@ internal final class UsageRepository {
         _ error: UsageAPIServiceError,
         accessToken: String,
         allowRetry: Bool,
+        allowingUserInteraction: Bool,
         now: Date
     ) async -> UsageRepositoryResult {
         switch error {
@@ -227,7 +250,7 @@ internal final class UsageRepository {
             // us. An identical token means the session itself is expired, not stale creds.
             let refreshed: ClaudeCodeCredentials
             do {
-                refreshed = try await readFreshCredentials()
+                refreshed = try await readFreshCredentials(allowingUserInteraction: allowingUserInteraction)
             } catch let credentialsError as ClaudeCodeCredentialsError where credentialsError.isAuthorizationFailure {
                 cachedCredentials = nil
                 // Must surface, not collapse into .sessionExpired: this is the second read of a
@@ -244,7 +267,12 @@ internal final class UsageRepository {
                 recordSessionExpired(now: now)
                 return .sessionExpired
             }
-            return await performFetch(accessToken: refreshed.accessToken, allowRetry: false, now: now)
+            return await performFetch(
+                accessToken: refreshed.accessToken,
+                allowRetry: false,
+                allowingUserInteraction: allowingUserInteraction,
+                now: now
+            )
         case .rateLimited(let retryAfter):
             recordRateLimit(retryAfter: retryAfter, now: now)
             return cachedResult(now: now) ?? .failure(.rateLimited(retryAfter: retryAfter))

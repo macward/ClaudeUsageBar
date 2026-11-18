@@ -12,12 +12,17 @@ internal final class SequencedCredentialsService: ClaudeCodeCredentialsServicePr
     /// "the app never re-prompts on its own" assert on this counter.
     internal private(set) var callCount: Int = 0
 
+    /// The `allowingUserInteraction` flag of every read, in order. A `true` is a read that may
+    /// open the system dialog, so only user-initiated paths may ever produce one.
+    internal private(set) var interactionFlags: [Bool] = []
+
     internal init(results: [Result<ClaudeCodeCredentials, ClaudeCodeCredentialsError>]) {
         self.results = results
     }
 
-    internal func readCredentials() async throws -> ClaudeCodeCredentials {
+    internal func readCredentials(allowingUserInteraction: Bool) async throws -> ClaudeCodeCredentials {
         callCount += 1
+        interactionFlags.append(allowingUserInteraction)
         guard !results.isEmpty else { throw ClaudeCodeCredentialsError.itemNotFound }
         let result: Result<ClaudeCodeCredentials, ClaudeCodeCredentialsError> = results.count > 1
             ? results.removeFirst()

@@ -85,10 +85,12 @@ internal final class UsageMenuViewModel {
 
     internal private(set) var state: UsageMenuState
 
-    /// True while the polling loop is deliberately stopped because the Keychain refused access.
-    /// Retrying a denied read re-opens the SecurityAgent prompt, so the loop must never do it on
-    /// its own — a denial would otherwise come back as a prompt every cycle. Only
-    /// ``retryAuthorization()``, driven by an explicit user action, resumes from here.
+    /// True while the polling loop is deliberately stopped because the Keychain refused access —
+    /// either the user denied the dialog, or an automatic read needed approval and, being
+    /// automatic, was not allowed to ask for it. The latter is the common case: the CLI rewrites
+    /// its item several times a day, and each rewrite drops this app's grant. Nothing the loop can
+    /// do fixes either one on its own, so it stops. Only ``retryAuthorization()``, driven by an
+    /// explicit user action, resumes from here.
     internal private(set) var isAwaitingAuthorizationRetry: Bool = false
 
     /// When the repository will next allow a fetch, set only when it has actually refused one.
@@ -108,6 +110,12 @@ internal final class UsageMenuViewModel {
     private let repository: UsageRepository
     private let userDefaults: UserDefaults
     private let isPollingEnabled: Bool
+
+    /// Set when the user presses "Autorizar" in onboarding, consumed by the next refresh. That one
+    /// read is the user's own request, so it may open the system dialog; every later automatic
+    /// read may not. A flag rather than a direct read keeps the onboarding button synchronous and
+    /// lets the polling loop's first iteration be the read that carries it.
+    private var isNextReadUserInitiated: Bool = false
 
     private var pollingTask: Task<Void, Never>?
     private var wakeObserver: NSObjectProtocol?
@@ -151,12 +159,13 @@ internal final class UsageMenuViewModel {
         guard case .onboarding = state else { return }
         userDefaults.set(true, forKey: Self.onboardingKey)
         state = .loading
+        isNextReadUserInitiated = true
         start()
     }
 
-    /// The user's explicit "try again" after the Keychain denied access. This is the only path
-    /// that may re-trigger the system prompt, and it resumes the polling loop only if the read
-    /// actually succeeded this time.
+    /// The user's explicit "try again" after the Keychain denied access. Together with the read
+    /// right after onboarding, this is the only path that may open the system prompt, and it
+    /// resumes the polling loop only if the read actually succeeded this time.
     internal func retryAuthorization() async {
         guard isAwaitingAuthorizationRetry else { return }
         isAwaitingAuthorizationRetry = false
@@ -182,9 +191,11 @@ internal final class UsageMenuViewModel {
 
     private func performRefresh(ignoringThrottle: Bool) async {
         guard hasCompletedOnboarding, !isAwaitingAuthorizationRetry else { return }
+        let allowingUserInteraction: Bool = isNextReadUserInitiated
+        isNextReadUserInitiated = false
         let result: UsageRepositoryResult = ignoringThrottle
             ? await repository.retryIgnoringThrottle()
-            : await repository.refresh()
+            : await repository.refresh(allowingUserInteraction: allowingUserInteraction)
         apply(result)
     }
 

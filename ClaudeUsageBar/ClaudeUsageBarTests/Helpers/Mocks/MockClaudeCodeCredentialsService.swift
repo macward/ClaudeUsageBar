@@ -9,7 +9,7 @@ internal nonisolated struct MockClaudeCodeCredentialsService: ClaudeCodeCredenti
         self.result = result
     }
 
-    internal func readCredentials() async throws -> ClaudeCodeCredentials {
+    internal func readCredentials(allowingUserInteraction: Bool) async throws -> ClaudeCodeCredentials {
         try result.get()
     }
 }
