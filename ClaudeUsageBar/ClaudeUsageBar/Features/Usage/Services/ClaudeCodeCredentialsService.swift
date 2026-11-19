@@ -81,21 +81,105 @@ internal nonisolated protocol ClaudeCodeCredentialsServiceProtocol: Sendable {
 
 internal nonisolated struct ClaudeCodeCredentialsService: ClaudeCodeCredentialsServiceProtocol {
 
+    // MARK: - Properties
+
     private static let service: String = "Claude Code-credentials"
+    private static let securityToolURL: URL = URL(fileURLWithPath: "/usr/bin/security")
+    /// `security`'s exit code for `errSecItemNotFound`.
+    private static let securityToolItemNotFoundExitCode: Int32 = 44
+    /// An automatic read must never hang the polling loop: if `security` has not answered by then it
+    /// is waiting on a dialog, so it is killed (which dismisses the dialog) and the read falls back.
+    private static let silentSecurityToolTimeout: Duration = .seconds(3)
+    /// A read the user asked for may wait on the dialog for as long as they take to answer it.
+    private static let interactiveSecurityToolTimeout: Duration = .seconds(120)
+
+    // MARK: - Lifecycle
 
     internal init() {}
 
-    /// `SecItemCopyMatching` blocks until the user answers the SecurityAgent prompt, so this
-    /// always runs off the caller's actor via `Task.detached`.
+    // MARK: - Public Methods
+
+    /// Reads through `/usr/bin/security` first and only falls back to `SecItemCopyMatching` when
+    /// that fails. The CLI creates its item with `security add-generic-password`, so the item's ACL
+    /// trusts `/usr/bin/security` and that binary reads it silently, every time, even after the CLI
+    /// rewrites the item. A direct `SecItemCopyMatching` from this app is never on that ACL and
+    /// needs the user's approval again after every rewrite. Reading through `security` needs the
+    /// app to be outside the App Sandbox, which cannot launch it. CodexBar, TokenEater and CodeBurn
+    /// read the item the same way.
+    ///
+    /// Both paths block (on the child process, or on the SecurityAgent prompt), so this always runs
+    /// off the caller's actor via `Task.detached`.
     internal func readCredentials(allowingUserInteraction: Bool) async throws -> ClaudeCodeCredentials {
         try await Task.detached(priority: .userInitiated) {
-            try Self.readCredentialsBlocking(allowingUserInteraction: allowingUserInteraction)
+            let timeout: Duration = allowingUserInteraction
+                ? Self.interactiveSecurityToolTimeout
+                : Self.silentSecurityToolTimeout
+            switch Self.readWithSecurityTool(timeout: timeout) {
+            case .payload(let data):
+                return try Self.decode(data)
+            case .itemNotFound:
+                throw ClaudeCodeCredentialsError.itemNotFound
+            case .unavailable:
+                return try Self.readWithKeychainServices(allowingUserInteraction: allowingUserInteraction)
+            }
         }.value
     }
 
     // MARK: - Private Methods
 
-    private static func readCredentialsBlocking(allowingUserInteraction: Bool) throws -> ClaudeCodeCredentials {
+    private enum SecurityToolResult {
+        case payload(Data)
+        case itemNotFound
+        /// Launch failure, timeout, denial or any other exit code: the caller falls back to
+        /// `SecItemCopyMatching`, which maps each of those to a precise error.
+        case unavailable
+    }
+
+    private static func readWithSecurityTool(timeout: Duration) -> SecurityToolResult {
+        let process: Process = Process()
+        process.executableURL = securityToolURL
+        process.arguments = ["find-generic-password", "-s", service, "-w"]
+        let standardOutput: Pipe = Pipe()
+        process.standardOutput = standardOutput
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return .unavailable
+        }
+
+        let timeoutTask: Task<Void, Never> = Task.detached {
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled, process.isRunning else { return }
+            process.terminate()
+        }
+        // Reading to EOF before waiting keeps a large payload from filling the pipe and deadlocking.
+        let data: Data = standardOutput.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        timeoutTask.cancel()
+
+        guard process.terminationReason == .exit else { return .unavailable }
+        switch process.terminationStatus {
+        case 0:
+            guard let payload = trimmedPayload(data) else { return .unavailable }
+            return .payload(payload)
+        case securityToolItemNotFoundExitCode:
+            return .itemNotFound
+        default:
+            return .unavailable
+        }
+    }
+
+    /// `security -w` prints the password followed by a newline.
+    private static func trimmedPayload(_ data: Data) -> Data? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed: String = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return Data(trimmed.utf8)
+    }
+
+    private static func readWithKeychainServices(allowingUserInteraction: Bool) throws -> ClaudeCodeCredentials {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

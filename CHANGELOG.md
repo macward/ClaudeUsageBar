@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-11-19
+
+### Fixed
+
+- La app seguía pidiendo «Autorizar» (y la contraseña del llavero) después de cada renovación del
+  token de Claude Code. Ahora lee las credenciales con `/usr/bin/security`, igual que CodexBar,
+  TokenEater y CodeBurn. El CLI crea su item con esa misma herramienta, así que el item confía en
+  ella y la lectura nunca abre el diálogo, ni siquiera después de una reescritura. Si esa lectura
+  falla, la app vuelve a la lectura directa del llavero de antes.
+
+### Changed
+
+- La app ya no corre dentro del App Sandbox: una app sandboxed no puede ejecutar `/usr/bin/security`.
+
 ## [1.1.5] - 2026-11-18
 
 ### Fixed
