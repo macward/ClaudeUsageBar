@@ -94,8 +94,11 @@ codesign --verify --strict --verbose=2 "$APP_PATH"
 SIGN_INFO="$(codesign -d --verbose=2 "$APP_PATH" 2>&1)"
 ENTITLEMENTS="$(codesign -d --entitlements - --verbose=2 "$APP_PATH" 2>&1)"
 
-grep -q "app-sandbox" <<<"$ENTITLEMENTS" \
-  || { echo "ERROR: la app perdió el entitlement de sandbox"; exit 1; }
+# Desde 1.1.6 la app corre fuera del sandbox: necesita ejecutar /usr/bin/security para leer el
+# token sin diálogos del llavero, y una app sandboxed no puede hacerlo.
+if grep -q "app-sandbox" <<<"$ENTITLEMENTS"; then
+  echo "ERROR: la app volvió a quedar sandboxed y no podría ejecutar /usr/bin/security"; exit 1
+fi
 grep -q "flags=.*runtime" <<<"$SIGN_INFO" \
   || { echo "ERROR: falta hardened runtime, la notarización lo rechazaría"; exit 1; }
 grep -q "Developer ID Application" <<<"$SIGN_INFO" \
@@ -117,6 +120,13 @@ xcrun notarytool submit "$APP_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
 info "Stapleando la app"
 xcrun stapler staple "$APP_PATH"
 xcrun stapler validate "$APP_PATH"
+
+# --- ZIP -----------------------------------------------------------------
+# La app ya sellada, suelta, para quien prefiera no montar un DMG.
+info "Armando el ZIP"
+ZIP_PATH="$DIST_DIR/ClaudeUsageBar-${VERSION}.zip"
+rm -f "$ZIP_PATH"
+ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 
 # --- DMG -----------------------------------------------------------------
 # El DMG se arma a partir de la app ya sellada, así que el ticket viaja adentro.
@@ -159,4 +169,4 @@ if [[ -n "$MOUNT_POINT" ]]; then
   hdiutil detach "$MOUNT_POINT" -quiet
 fi
 
-info "Listo: $DMG_PATH"
+info "Listo: $DMG_PATH y $ZIP_PATH"
