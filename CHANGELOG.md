@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-11-19
+
 ### Fixed
 
 - La app seguía pidiendo «Autorizar» (y la contraseña del llavero) después de cada renovación del
